@@ -15,9 +15,9 @@ import com.bhav.gecko.dto.BulkInsertRequest;
 import com.bhav.gecko.dto.GetResponse;
 import com.bhav.gecko.dto.MemtableStats;
 import com.bhav.gecko.dto.PutRequest;
+import com.bhav.gecko.exception.KeyNotFoundException;
 import com.bhav.gecko.service.MemtableService;
-import com.bhav.gecko.store.KeyNotFoundException;
-import com.bhav.gecko.store.Record;
+import com.bhav.gecko.store.memtable.Record;
 
 import java.util.Map;
 import java.util.Set;
@@ -49,6 +49,20 @@ public class MemtableController {
         } catch (KeyNotFoundException e) {
             return ResponseEntity.status(HttpStatus.NOT_FOUND)
                     .body("Key not found: " + key);
+        }
+    }
+
+    @DeleteMapping("/delete/{key}")
+    public ResponseEntity<String> delete(@PathVariable String key) {
+        try {
+            memtableService.delete(key);
+            return ResponseEntity.ok("Key deleted successfully");
+        } catch (KeyNotFoundException e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body("Key not found: " + key);
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Error deleting key: " + e.getMessage());
         }
     }
 

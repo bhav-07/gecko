@@ -1,4 +1,4 @@
-package com.bhav.gecko.store;
+package com.bhav.gecko.store.memtable;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
