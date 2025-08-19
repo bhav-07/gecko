@@ -1,5 +1,7 @@
 package com.bhav.gecko.service;
 
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.springframework.stereotype.Service;
 
 import com.bhav.gecko.dto.MemtableStats;
@@ -18,14 +20,16 @@ import java.util.Set;
 public class MemtableService {
     private final Memtable memtable;
 
+    private static final Log logger = LogFactory.getLog(MemtableService.class);
+
     @PostConstruct
     public void initialize() {
         try {
             // Attempt recovery on startup
             memtable.recoverFromWAL();
-            System.out.println("Memtable service initialized with WAL recovery");
+            logger.debug("Memtable service initialized with WAL recovery");
         } catch (Exception e) {
-            System.err.println("WAL recovery failed: " + e.getMessage());
+            logger.error("WAL recovery failed: " + e.getMessage());
             throw new RuntimeException("Critical: WAL recovery failed", e);
         }
     }

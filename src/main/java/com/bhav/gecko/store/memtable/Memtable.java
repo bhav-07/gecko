@@ -2,7 +2,9 @@ package com.bhav.gecko.store.memtable;
 
 import java.io.IOException;
 import java.util.*;
-import java.util.stream.Collectors;
+
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 
 import com.bhav.gecko.exception.KeyNotFoundException;
 import com.bhav.gecko.store.wal.Operation;
@@ -14,6 +16,8 @@ public class Memtable {
     private TreeMap<String, Record> data;
     private int sizeInBytes;
     private WriteAheadLog wal;
+
+    private static final Log logger = LogFactory.getLog(Memtable.class);
 
     public Memtable(String walDirectory) throws IOException {
         this.data = new TreeMap<>();
@@ -59,16 +63,6 @@ public class Memtable {
         return new HashMap<>(data);
     }
 
-    public void printAllRecords() {
-        System.out.println(returnAllRecordsInSortedOrder());
-    }
-
-    private List<Record> returnAllRecordsInSortedOrder() {
-        return data.values()
-                .stream()
-                .collect(Collectors.toList());
-    }
-
     public void clear() {
         data.clear();
         sizeInBytes = 0;
@@ -102,11 +96,11 @@ public class Memtable {
 
     public void recoverFromWAL() throws Exception {
         if (!wal.hasRecoveryData()) {
-            System.out.println("No WAL data found");
+            logger.debug("No WAL data found");
             return;
         }
 
-        System.out.println("Starting WAL recovery...");
+        logger.debug("Starting WAL recovery...");
         List<WALEntry> entries = wal.readAllEntries();
 
         int appliedEntries = 0;
@@ -117,12 +111,12 @@ public class Memtable {
                 applyWALEntry(entry);
                 appliedEntries++;
             } catch (Exception e) {
-                System.err.println("Failed to apply WAL entry: " + entry + " - " + e.getMessage());
+                logger.error("Failed to apply WAL entry: " + entry + " - " + e.getMessage());
                 skippedEntries++;
             }
         }
 
-        System.out.println(String.format("WAL recovery completed. Applied: %d, Skipped: %d",
+        logger.debug(String.format("WAL recovery completed. Applied: %d, Skipped: %d",
                 appliedEntries, skippedEntries));
 
         wal.truncateWAL();
