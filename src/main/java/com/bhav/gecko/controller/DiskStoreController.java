@@ -16,7 +16,7 @@ import com.bhav.gecko.dto.GetResponse;
 import com.bhav.gecko.dto.MemtableStats;
 import com.bhav.gecko.dto.PutRequest;
 import com.bhav.gecko.exception.KeyNotFoundException;
-import com.bhav.gecko.service.MemtableService;
+import com.bhav.gecko.store.diskstore.DiskStoreServiceImpl;
 import com.bhav.gecko.store.memtable.Record;
 
 import java.util.Map;
@@ -24,15 +24,15 @@ import java.util.Set;
 
 @RestController
 @RequestMapping("/api/memtable")
-public class MemtableController {
+public class DiskStoreController {
 
     @Autowired
-    private MemtableService memtableService;
+    private DiskStoreServiceImpl diskStoreService;
 
     @PostMapping("/put")
     public ResponseEntity<String> put(@RequestBody PutRequest request) {
         try {
-            memtableService.put(request.getKey(), request.getValue());
+            diskStoreService.put(request.getKey(), request.getValue());
             return ResponseEntity.ok("Key-value pair stored successfully");
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
@@ -43,7 +43,7 @@ public class MemtableController {
     @GetMapping("/get/{key}")
     public ResponseEntity<?> get(@PathVariable String key) {
         try {
-            Record record = memtableService.get(key);
+            Record record = diskStoreService.get(key);
             return ResponseEntity.ok(new GetResponse(record.getKey(), record.getValue(),
                     record.getTimestamp(), record.isDeleted()));
         } catch (KeyNotFoundException e) {
@@ -55,7 +55,7 @@ public class MemtableController {
     @DeleteMapping("/delete/{key}")
     public ResponseEntity<String> delete(@PathVariable String key) {
         try {
-            memtableService.delete(key);
+            diskStoreService.delete(key);
             return ResponseEntity.ok("Key deleted successfully");
         } catch (KeyNotFoundException e) {
             return ResponseEntity.status(HttpStatus.NOT_FOUND)
@@ -68,32 +68,32 @@ public class MemtableController {
 
     @GetMapping("/all")
     public ResponseEntity<Map<String, Record>> getAllKVPairs() {
-        Map<String, Record> allPairs = memtableService.getAllKVPairs();
+        Map<String, Record> allPairs = diskStoreService.getAllKVPairs();
         return ResponseEntity.ok(allPairs);
     }
 
     @GetMapping("/keys")
     public ResponseEntity<Set<String>> getAllKeys() {
-        Set<String> keys = memtableService.getAllKeys();
+        Set<String> keys = diskStoreService.getAllKeys();
         return ResponseEntity.ok(keys);
     }
 
     @GetMapping("/stats")
     public ResponseEntity<MemtableStats> getStats() {
-        MemtableStats stats = memtableService.getStats();
+        MemtableStats stats = diskStoreService.getMemtableStats();
         return ResponseEntity.ok(stats);
     }
 
-    @DeleteMapping("/clear")
-    public ResponseEntity<String> clear() {
-        memtableService.clear();
-        return ResponseEntity.ok("Memtable cleared successfully");
-    }
+    // @DeleteMapping("/clear")
+    // public ResponseEntity<String> clear() {
+    // diskStoreService.();
+    // return ResponseEntity.ok("Memtable cleared successfully");
+    // }
 
     @PostMapping("/bulk")
     public ResponseEntity<String> bulkInsert(@RequestBody BulkInsertRequest request) {
         try {
-            memtableService.bulkInsert(request.getData());
+            diskStoreService.bulkInsert(request.getData());
             return ResponseEntity.ok("Bulk insert completed successfully");
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
