@@ -1,7 +1,7 @@
 package com.bhav.gecko.store.wal;
 
 import com.bhav.gecko.store.memtable.Header;
-import com.bhav.gecko.store.memtable.Record;
+import com.bhav.gecko.store.memtable.MemTableRecord;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -29,7 +29,7 @@ public class WriteAheadLog {
         }
     }
 
-    public void appendWALOperation(Operation op, Record record) throws Exception {
+    public void appendWALOperation(Operation op, MemTableRecord record) throws Exception {
         List<Byte> buffer = new ArrayList<>();
 
         buffer.add(op.getValue());
@@ -90,7 +90,8 @@ public class WriteAheadLog {
                     throw new Exception("Incomplete WAL entry - record truncated");
                 }
 
-                Record record = Record.decodeKV(Arrays.copyOfRange(walData, offset, offset + totalRecordSize));
+                MemTableRecord record = MemTableRecord
+                        .decodeKV(Arrays.copyOfRange(walData, offset, offset + totalRecordSize));
 
                 if (!record.verifyChecksum()) {
                     System.err.println("Checksum mismatch for record: " + record.getKey() + " - skipping");

@@ -1,13 +1,13 @@
 package com.bhav.gecko.store.wal;
 
-import com.bhav.gecko.store.memtable.Record;
+import com.bhav.gecko.store.memtable.MemTableRecord;
 
 public class WALEntry {
     private Operation operation;
-    private Record record;
+    private MemTableRecord record;
     private long sequenceNumber; // Optional: for ordering
 
-    public WALEntry(Operation operation, Record record) {
+    public WALEntry(Operation operation, MemTableRecord record) {
         this.operation = operation;
         this.record = record;
         this.sequenceNumber = System.currentTimeMillis();
@@ -17,7 +17,7 @@ public class WALEntry {
         return operation;
     }
 
-    public Record getRecord() {
+    public MemTableRecord getRecord() {
         return record;
     }
 

@@ -17,7 +17,7 @@ import com.bhav.gecko.dto.MemtableStats;
 import com.bhav.gecko.dto.PutRequest;
 import com.bhav.gecko.exception.KeyNotFoundException;
 import com.bhav.gecko.store.diskstore.DiskStoreServiceImpl;
-import com.bhav.gecko.store.memtable.Record;
+import com.bhav.gecko.store.memtable.MemTableRecord;
 
 import java.util.Map;
 import java.util.Set;
@@ -43,7 +43,7 @@ public class DiskStoreController {
     @GetMapping("/get/{key}")
     public ResponseEntity<?> get(@PathVariable String key) {
         try {
-            Record record = diskStoreService.get(key);
+            MemTableRecord record = diskStoreService.get(key);
             return ResponseEntity.ok(new GetResponse(record.getKey(), record.getValue(),
                     record.getTimestamp(), record.isDeleted()));
         } catch (KeyNotFoundException e) {
@@ -67,8 +67,8 @@ public class DiskStoreController {
     }
 
     @GetMapping("/all")
-    public ResponseEntity<Map<String, Record>> getAllKVPairs() {
-        Map<String, Record> allPairs = diskStoreService.getAllKVPairs();
+    public ResponseEntity<Map<String, MemTableRecord>> getAllKVPairs() {
+        Map<String, MemTableRecord> allPairs = diskStoreService.getAllKVPairs();
         return ResponseEntity.ok(allPairs);
     }
 

@@ -5,7 +5,7 @@ import java.util.Set;
 
 import com.bhav.gecko.dto.MemtableStats;
 import com.bhav.gecko.exception.KeyNotFoundException;
-import com.bhav.gecko.store.memtable.Record;
+import com.bhav.gecko.store.memtable.MemTableRecord;
 
 /**
  * Service interface for disk-based storage operations.
@@ -19,7 +19,7 @@ public interface DiskStoreService {
      *
      * @return Map containing all key-value pairs as Records
      */
-    Map<String, Record> getAllKVPairs();
+    Map<String, MemTableRecord> getAllKVPairs();
 
     /**
      * Retrieves all keys from the memtable.
@@ -59,7 +59,7 @@ public interface DiskStoreService {
      * @return Record associated with the key
      * @throws KeyNotFoundException if key is not found
      */
-    Record get(String key) throws KeyNotFoundException;
+    MemTableRecord get(String key) throws KeyNotFoundException;
 
     /**
      * Deletes a record by marking it with a tombstone.

@@ -4,17 +4,17 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.zip.CRC32;
 
-public class Record {
+public class MemTableRecord {
     private Header header;
     private String key;
     private String value;
     private int recordSize;
 
-    public Record() {
+    public MemTableRecord() {
         this.header = new Header();
     }
 
-    public Record(String key, String value) {
+    public MemTableRecord(String key, String value) {
         this.key = key;
         this.value = value;
         this.header = new Header();
@@ -36,7 +36,7 @@ public class Record {
         }
     }
 
-    public Record(String key, String value, int timestamp, boolean deleted) {
+    public MemTableRecord(String key, String value, int timestamp, boolean deleted) {
         this.key = key;
         this.value = value;
         this.header = new Header();
@@ -71,12 +71,12 @@ public class Record {
         return buffer.array();
     }
 
-    public static Record decodeKV(byte[] buf) throws Exception {
+    public static MemTableRecord decodeKV(byte[] buf) throws Exception {
         if (buf.length < Header.HEADER_SIZE) {
             throw new Exception("Buffer too small for record");
         }
 
-        Record record = new Record();
+        MemTableRecord record = new MemTableRecord();
 
         // Decode header
         record.header.decodeHeader(buf);

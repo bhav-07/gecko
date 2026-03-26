@@ -9,7 +9,7 @@ import com.bhav.gecko.exception.KeyNotFoundException;
 
 @Service
 public class Memtable {
-    private TreeMap<String, Record> data;
+    private TreeMap<String, MemTableRecord> data;
     private int sizeInBytes;
 
     public Memtable() {
@@ -17,8 +17,8 @@ public class Memtable {
         this.sizeInBytes = 0;
     }
 
-    public void put(String key, Record value) {
-        Record existingRecord = data.get(key);
+    public void put(String key, MemTableRecord value) {
+        MemTableRecord existingRecord = data.get(key);
         if (existingRecord != null) {
             sizeInBytes -= existingRecord.getRecordSize();
         }
@@ -33,8 +33,8 @@ public class Memtable {
                 isEmpty());
     }
 
-    public Record get(String key) throws KeyNotFoundException {
-        Record record = data.get(key);
+    public MemTableRecord get(String key) throws KeyNotFoundException {
+        MemTableRecord record = data.get(key);
         if (record == null) {
             throw new KeyNotFoundException("Key not found: " + key);
         }
@@ -46,7 +46,7 @@ public class Memtable {
         sizeInBytes -= recordSize;
     }
 
-    public Map<String, Record> getAllKVPairs() {
+    public Map<String, MemTableRecord> getAllKVPairs() {
         return new TreeMap<>(data);
     }
 
@@ -91,7 +91,7 @@ public class Memtable {
             sb.append("  entries:\n");
             int previewLimit = 5;
             int count = 0;
-            for (Map.Entry<String, Record> entry : data.entrySet()) {
+            for (Map.Entry<String, MemTableRecord> entry : data.entrySet()) {
                 sb.append("    ")
                         .append(entry.getKey())
                         .append(" => ")

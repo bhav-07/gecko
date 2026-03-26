@@ -5,8 +5,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.TreeMap;
-
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -17,7 +15,7 @@ import com.bhav.gecko.dto.MemtableStats;
 import com.bhav.gecko.exception.KeyNotFoundException;
 import com.bhav.gecko.service.DiskStoreService;
 import com.bhav.gecko.store.memtable.Memtable;
-import com.bhav.gecko.store.memtable.Record;
+import com.bhav.gecko.store.memtable.MemTableRecord;
 import com.bhav.gecko.store.wal.Operation;
 import com.bhav.gecko.store.wal.WALEntry;
 import com.bhav.gecko.store.wal.WriteAheadLog;
@@ -53,7 +51,7 @@ public class DiskStoreServiceImpl implements DiskStoreService {
         }
     }
 
-    public Map<String, Record> getAllKVPairs() {
+    public Map<String, MemTableRecord> getAllKVPairs() {
         return memtable.getAllKVPairs();
     }
 
@@ -67,7 +65,7 @@ public class DiskStoreServiceImpl implements DiskStoreService {
 
     public void put(String key, String value) throws Exception {
 
-        Record record = new Record(key, value);
+        MemTableRecord record = new MemTableRecord(key, value);
 
         wal.appendWALOperation(Operation.PUT, record);
         memtable.put(key, record);
@@ -78,6 +76,7 @@ public class DiskStoreServiceImpl implements DiskStoreService {
             immutableMemtables.add(memtable);
             // memtable.clear();
             // wal.truncateWAL();
+            logger.warn("Flushed memtable");
         }
     }
 
@@ -98,17 +97,17 @@ public class DiskStoreServiceImpl implements DiskStoreService {
         });
     }
 
-    public Record get(String key) throws KeyNotFoundException {
+    public MemTableRecord get(String key) throws KeyNotFoundException {
         return memtable.get(key);
     }
 
     public void delete(String key) throws Exception {
-        Record existingRecord = memtable.get(key);
+        MemTableRecord existingRecord = memtable.get(key);
         if (existingRecord == null) {
             throw new KeyNotFoundException("Cannot delete - key not found: " + key);
         }
 
-        Record tombstoneRecord = new Record(key, existingRecord.getValue(),
+        MemTableRecord tombstoneRecord = new MemTableRecord(key, existingRecord.getValue(),
                 existingRecord.getHeader().getTimeStamp(), true);
 
         wal.appendWALOperation(Operation.DELETE, tombstoneRecord);
@@ -147,7 +146,7 @@ public class DiskStoreServiceImpl implements DiskStoreService {
 
     private void applyWALEntry(WALEntry entry) throws Exception {
         Operation op = entry.getOperation();
-        Record record = entry.getRecord();
+        MemTableRecord record = entry.getRecord();
 
         switch (op) {
             case PUT:
