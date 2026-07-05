@@ -38,12 +38,14 @@ public class Memtable {
         if (record == null) {
             throw new KeyNotFoundException("Key not found: " + key);
         }
+        if (record.isDeleted()) {
+            throw new KeyNotFoundException("Key has been deleted: " + key);
+        }
         return record;
     }
 
-    public void delete(String key, int recordSize) throws Exception {
-        data.remove(key);
-        sizeInBytes -= recordSize;
+    public void delete(String key, MemTableRecord tombStoneRecord) throws Exception {
+        put(key, tombStoneRecord);
     }
 
     public Map<String, MemTableRecord> getAllKVPairs() {
