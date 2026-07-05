@@ -31,23 +31,17 @@ public class DiskStoreServiceImpl implements DiskStoreService {
 
     @Autowired
     private Memtable memtable;
-    private WriteAheadLog wal;
+    private WriteAheadLog activeWal;
     private static final Log logger = LogFactory.getLog(DiskStoreServiceImpl.class);
     private List<Memtable> immutableMemtables = new ArrayList<>();
-
-    @Value("${sst.directory}")
-    private static final String SST_DIR = "./sst";
 
     @Value("${memtable.flsuh.threshold}")
     private int MEMTABLE_FLUSH_THRESHOLD;
 
-    @Value("${wal.directory}")
-    private String WAL_DIR;
-
     @PostConstruct
     public void initialize() {
         try {
-            this.wal = new WriteAheadLog(WAL_DIR); // safe now, WAL_DIR is injected
+            this.activeWal = new WriteAheadLog(); // safe now, WAL_DIR is injected
             recoverFromWAL();
             logger.debug("Memtable service initialized with WAL recovery");
         } catch (Exception e) {
@@ -72,7 +66,7 @@ public class DiskStoreServiceImpl implements DiskStoreService {
 
         MemTableRecord record = new MemTableRecord(key, value);
 
-        wal.appendWALOperation(Operation.PUT, record);
+        activeWal.appendWALOperation(Operation.PUT, record);
         memtable.put(key, record);
 
         if (memtable.getSizeInBytes() >= MEMTABLE_FLUSH_THRESHOLD) {
@@ -88,9 +82,9 @@ public class DiskStoreServiceImpl implements DiskStoreService {
         for (Memtable immutable : immutableMemtables) {
             try {
                 List<MemTableRecord> entries = new ArrayList<>(immutable.getAllKVPairs().values());
-                SSTable.initSSTableOnDisk(SST_DIR, entries);
+                SSTable.initSSTableOnDisk(entries);
                 immutableMemtables.remove(immutable);
-                wal.truncateWAL();
+                activeWal.truncateWAL();
                 logger.info("Flushed Memtable to SSTable successfully");
             } catch (IOException e) {
                 logger.error("Failed to flush Memtable to disk: " + e.getMessage());
@@ -120,18 +114,18 @@ public class DiskStoreServiceImpl implements DiskStoreService {
         MemTableRecord tombstoneRecord = new MemTableRecord(key, existingRecord.getValue(),
                 existingRecord.getHeader().getTimeStamp(), true);
 
-        wal.appendWALOperation(Operation.DELETE, tombstoneRecord);
+        activeWal.appendWALOperation(Operation.DELETE, tombstoneRecord);
         memtable.delete(key,tombstoneRecord);
     }
 
     public void recoverFromWAL() throws Exception {
-        if (!wal.hasRecoveryData()) {
+        if (!activeWal.hasRecoveryData()) {
             logger.debug("No WAL data found");
             return;
         }
 
         logger.debug("Starting WAL recovery...");
-        List<WALEntry> entries = wal.readAllEntries();
+        List<WALEntry> entries = activeWal.readAllEntries();
 
         int appliedEntries = 0;
         int skippedEntries = 0;
@@ -192,7 +186,7 @@ public class DiskStoreServiceImpl implements DiskStoreService {
     @PreDestroy
     public void cleanup() {
         try {
-            wal.close();
+            activeWal.close();
         } catch (IOException e) {
             System.err.println("Error closing WAL: " + e.getMessage());
         }

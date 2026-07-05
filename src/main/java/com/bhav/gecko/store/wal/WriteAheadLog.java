@@ -2,6 +2,7 @@ package com.bhav.gecko.store.wal;
 
 import com.bhav.gecko.store.memtable.Header;
 import com.bhav.gecko.store.memtable.MemTableRecord;
+import org.springframework.beans.factory.annotation.Value;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -18,7 +19,10 @@ public class WriteAheadLog {
     private List<Byte> opsBatch;
     private int size;
 
-    public WriteAheadLog(String walDirectory) throws IOException {
+    @Value("${wal.directory}")
+    private String walDirectory;
+
+    public WriteAheadLog() throws IOException {
         this.filePath = walDirectory + "/wal.log";
         this.opsBatch = new ArrayList<>();
         this.size = 0;

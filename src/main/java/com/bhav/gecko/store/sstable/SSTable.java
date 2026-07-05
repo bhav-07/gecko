@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import com.bhav.gecko.store.memtable.MemTableRecord;
+import org.springframework.beans.factory.annotation.Value;
 
 public class SSTable {
 
@@ -29,14 +30,17 @@ public class SSTable {
     private Integer sizeInBytes = 0;
     private List<SparseIndex> sparseKeys = new ArrayList<>();
 
+    @Value("${sst.directory}")
+    private static final String SST_DIR = "./sst";
+
     public SSTable(int sstCounter) {
         this.sstCounter = sstCounter;
     }
 
-    public static void initSSTableOnDisk(String directory, List<MemTableRecord> entries) throws IOException {
+    public static void initSSTableOnDisk(List<MemTableRecord> entries) throws IOException {
         int counter = sstTableCounter.incrementAndGet();
         SSTable table = new SSTable(counter);
-        table.initTableFiles(directory);
+        table.initTableFiles(SST_DIR);
         writeEntriesToSST(entries, table);
     }
 
