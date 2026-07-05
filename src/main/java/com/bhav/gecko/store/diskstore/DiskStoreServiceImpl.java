@@ -5,6 +5,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+
+import com.bhav.gecko.store.sstable.SSTable;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -32,6 +34,9 @@ public class DiskStoreServiceImpl implements DiskStoreService {
     private WriteAheadLog wal;
     private static final Log logger = LogFactory.getLog(DiskStoreServiceImpl.class);
     private List<Memtable> immutableMemtables = new ArrayList<>();
+
+    @Value("${sst.directory}")
+    private static final String SST_DIR = "./sst";
 
     @Value("${memtable.flsuh.threshold}")
     private int MEMTABLE_FLUSH_THRESHOLD;
@@ -74,15 +79,23 @@ public class DiskStoreServiceImpl implements DiskStoreService {
             logger.warn("Flush threshold for memtable exceeded!");
             logger.info(memtable.toString());
             immutableMemtables.add(memtable);
-            // memtable.clear();
-            // wal.truncateWAL();
+            flushMemtable();
             logger.warn("Flushed memtable");
         }
     }
 
     public void flushMemtable() {
-        for (Memtable memtable : immutableMemtables) {
-
+        for (Memtable immutable : immutableMemtables) {
+            try {
+                List<MemTableRecord> entries = new ArrayList<>(immutable.getAllKVPairs().values());
+                SSTable.initSSTableOnDisk(SST_DIR, entries);
+                immutableMemtables.remove(immutable);
+                wal.truncateWAL();
+                logger.info("Flushed Memtable to SSTable successfully");
+            } catch (IOException e) {
+                logger.error("Failed to flush Memtable to disk: " + e.getMessage());
+                throw new RuntimeException("Critical: flush failed", e);
+            }
         }
     }
 
@@ -103,15 +116,12 @@ public class DiskStoreServiceImpl implements DiskStoreService {
 
     public void delete(String key) throws Exception {
         MemTableRecord existingRecord = memtable.get(key);
-        if (existingRecord == null) {
-            throw new KeyNotFoundException("Cannot delete - key not found: " + key);
-        }
 
         MemTableRecord tombstoneRecord = new MemTableRecord(key, existingRecord.getValue(),
                 existingRecord.getHeader().getTimeStamp(), true);
 
         wal.appendWALOperation(Operation.DELETE, tombstoneRecord);
-        memtable.delete(key, tombstoneRecord.getRecordSize());
+        memtable.delete(key,tombstoneRecord);
     }
 
     public void recoverFromWAL() throws Exception {
@@ -136,7 +146,7 @@ public class DiskStoreServiceImpl implements DiskStoreService {
             }
         }
 
-        logger.debug(String.format("WAL recovery completed. Applied: %d, Skipped:%d", appliedEntries, skippedEntries));
+        logger.info(String.format("WAL recovery completed. Applied: %d, Skipped:%d", appliedEntries, skippedEntries));
 
         // TODO: Dont truncate here, because if the data isnt written to sstable it can
         // lead to data loss
@@ -154,7 +164,7 @@ public class DiskStoreServiceImpl implements DiskStoreService {
                 break;
 
             case DELETE:
-                memtable.delete(record.getKey(), record.getRecordSize());
+                memtable.delete(record.getKey(), record);
                 break;
 
             case GET:

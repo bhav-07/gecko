@@ -56,7 +56,7 @@ public class MemTableRecord {
         }
     }
 
-    public byte[] encodeKV() throws Exception {
+    public byte[] encodeKV() {
         ByteBuffer buffer = ByteBuffer.allocate(recordSize);
         buffer.order(ByteOrder.LITTLE_ENDIAN);
 
