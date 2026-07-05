@@ -95,9 +95,8 @@ public class Header {
      * checksum, tombstone, timestamp, key size, value size.
      *
      * @return a byte array representing this header on disk
-     * @throws Exception if serialization fails for any reason
      */
-    public byte[] encodeHeader() throws Exception {
+    public byte[] encodeHeader() {
         ByteBuffer buffer = ByteBuffer.allocate(HEADER_SIZE);
         buffer.order(ByteOrder.LITTLE_ENDIAN);
 
