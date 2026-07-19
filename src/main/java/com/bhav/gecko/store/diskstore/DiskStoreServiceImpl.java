@@ -31,7 +31,7 @@ import jakarta.annotation.PreDestroy;
 @Service
 public class DiskStoreServiceImpl implements DiskStoreService {
 
-    private Memtable memtable = new Memtable();
+    private volatile Memtable memtable = new Memtable();
     private WriteAheadLog activeWal;
     private Manifest manifest;
     private static final Log logger = LogFactory.getLog(DiskStoreServiceImpl.class);
@@ -118,6 +118,8 @@ public class DiskStoreServiceImpl implements DiskStoreService {
         memtable.put(key, record);
 
         if (memtable.getSizeInBytes() >= MEMTABLE_FLUSH_THRESHOLD) {
+            synchronized (flushLock) {
+        if (memtable.getSizeInBytes() >= MEMTABLE_FLUSH_THRESHOLD) {
             logger.warn("Flush threshold for memtable exceeded!");
             logger.info(memtable.toString());
             WriteAheadLog frozenWAL = this.activeWal;
@@ -131,6 +133,8 @@ public class DiskStoreServiceImpl implements DiskStoreService {
             // flushImmutable() will remove it from this list once it's safely on disk.
             immutableMemtables.add(frozenMemtable);
             flushExecutor.submit(() -> flushImmutable(frozenMemtable, frozenWAL));
+                }
+            }
         }
     }
 
