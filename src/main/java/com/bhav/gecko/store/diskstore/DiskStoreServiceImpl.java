@@ -37,9 +37,8 @@ public class DiskStoreServiceImpl implements DiskStoreService {
     private static final Log logger = LogFactory.getLog(DiskStoreServiceImpl.class);
     private final List<Memtable> immutableMemtables = new CopyOnWriteArrayList<>();
     private final ExecutorService flushExecutor = Executors.newSingleThreadExecutor();
-    private final List<SSTable> sstables = new ArrayList<>();
-
-    private final AtomicInteger walSegmentCounter = new AtomicInteger(0);
+    private final List<SSTable> sstables = new CopyOnWriteArrayList<>();
+    private final Object flushLock = new Object();
 
     @Value("${sst.directory}")
     private String SST_DIR;
