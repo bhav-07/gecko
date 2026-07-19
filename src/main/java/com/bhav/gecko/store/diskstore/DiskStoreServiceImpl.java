@@ -199,6 +199,9 @@ public class DiskStoreServiceImpl implements DiskStoreService {
                     }
                     return record;
                 }
+            } catch (KeyNotFoundException e) {
+                // If we found a tombstone, stop searching older SSTables and propagate the delete immediately
+                throw e;
             } catch (Exception e) {
                 logger.error("Error searching SSTable for key: " + key, e);
             }
