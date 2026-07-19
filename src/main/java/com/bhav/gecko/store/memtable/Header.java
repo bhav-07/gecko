@@ -21,7 +21,7 @@ import java.nio.ByteOrder;
 public class Header {
 
     /** The number of bytes a serialized header occupies on disk. */
-    public static final int HEADER_SIZE = 17;
+    public static final int HEADER_SIZE = 21; // 4 checksum + 1 tombstone + 8 timestamp + 4 keySize + 4 valueSize
 
     /** CRC or checksum used to detect data corruption when reading back from disk. */
     private int checkSum;
@@ -33,8 +33,8 @@ public class Header {
      */
     private byte tombstone;
 
-    /** Unix timestamp (in seconds) of when this record was written. */
-    private int timeStamp;
+    /** Unix timestamp in milliseconds of when this record was written. */
+    private long timeStamp;
 
     /** The length of the key in bytes, used to read the right number of bytes after the header. */
     private int keySize;
@@ -58,7 +58,7 @@ public class Header {
      * @param keySize   the length of the key in bytes
      * @param valueSize the length of the value in bytes
      */
-    public Header(int checkSum, byte tombstone, int timeStamp, int keySize, int valueSize) {
+    public Header(int checkSum, byte tombstone, long timeStamp, int keySize, int valueSize) {
         this.checkSum = checkSum;
         this.tombstone = tombstone;
         this.timeStamp = timeStamp;
@@ -102,7 +102,7 @@ public class Header {
 
         buffer.putInt(checkSum);
         buffer.put(tombstone);
-        buffer.putInt(timeStamp);
+        buffer.putLong(timeStamp);
         buffer.putInt(keySize);
         buffer.putInt(valueSize);
 
@@ -130,7 +130,7 @@ public class Header {
 
         this.checkSum = buffer.getInt();
         this.tombstone = buffer.get();
-        this.timeStamp = buffer.getInt();
+        this.timeStamp = buffer.getLong();
         this.keySize = buffer.getInt();
         this.valueSize = buffer.getInt();
     }
@@ -198,18 +198,18 @@ public class Header {
     /**
      * Returns the timestamp of when this record was written.
      *
-     * @return the timestamp as a Unix timestamp in seconds
+     * @return the timestamp as epoch milliseconds
      */
-    public int getTimeStamp() {
+    public long getTimeStamp() {
         return timeStamp;
     }
 
     /**
      * Sets the timestamp for this record.
      *
-     * @param timeStamp the Unix timestamp in seconds to set
+     * @param timeStamp the epoch milliseconds to set
      */
-    public void setTimeStamp(int timeStamp) {
+    public void setTimeStamp(long timeStamp) {
         this.timeStamp = timeStamp;
     }
 
