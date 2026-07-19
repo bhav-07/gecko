@@ -18,8 +18,7 @@ public class MemTableRecord {
         this.key = key;
         this.value = value;
         this.header = new Header();
-
-        this.header.setTimeStamp((int) (System.currentTimeMillis() / 1000));
+        this.header.setTimeStamp(System.currentTimeMillis());
         this.header.setTombstone((byte) 0);
         this.header.setKeySize(key.getBytes().length);
         this.header.setValueSize(value.getBytes().length);
@@ -38,7 +37,7 @@ public class MemTableRecord {
         }
     }
 
-    public MemTableRecord(String key, String value, int timestamp, boolean deleted) {
+    public MemTableRecord(String key, String value, long timestamp, boolean deleted) {
         this.key = key;
         this.value = value;
         this.header = new Header();
