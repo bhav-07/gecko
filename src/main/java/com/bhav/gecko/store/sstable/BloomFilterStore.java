@@ -43,7 +43,8 @@ public class BloomFilterStore {
             throw new IllegalStateException("Bloom filter not initialized. Call initBloomFilterAttrs() first.");
         }
         bloomFilter.put(key);
-        logger.debug("Added key to bloom filter: {}", key);
+        String source = bloomFile != null ? bloomFile.getName() : "unknown";
+        logger.debug("[{}] Added key: {}", source, key);
     }
 
     public boolean mightContain(String key) {
@@ -51,7 +52,8 @@ public class BloomFilterStore {
             throw new IllegalStateException("Bloom filter not initialized. Call initBloomFilterAttrs() first.");
         }
         boolean result = bloomFilter.mightContain(key);
-        logger.debug("Checking key in bloom filter: {} - Result: {}", key, result);
+        String source = bloomFile != null ? bloomFile.getName() : "unknown";
+        logger.debug("[{}] Checking key: {} - Result: {}", source, key, result);
         return result;
     }
 

@@ -119,7 +119,7 @@ public class DiskStoreServiceImpl implements DiskStoreService {
         if (memtable.getSizeInBytes() >= MEMTABLE_FLUSH_THRESHOLD) {
             synchronized (flushLock) {
                 if (memtable.getSizeInBytes() >= MEMTABLE_FLUSH_THRESHOLD) {
-                    logger.warn("Flush threshold for memtable exceeded!");
+                    logger.warn("Flush threshold exceeded (Size: " + memtable.getSizeInBytes() + " bytes) - initiating flush");
                     logger.info(memtable.toString());
                     WriteAheadLog frozenWAL = this.activeWal;
                     Memtable frozenMemtable = this.memtable;
@@ -139,7 +139,7 @@ public class DiskStoreServiceImpl implements DiskStoreService {
 
     private void flushImmutable(Memtable toFlush, WriteAheadLog segmentWAL) {
         try {
-            logger.info("Flush initiated for active memtable>>>>>>>>");
+            logger.info("Background flush task started for memtable (" + toFlush.size() + " entries)");
             List<MemTableRecord> entries = new ArrayList<>(toFlush.getAllKVPairs().values());
 
             // 1. Write SSTable files to disk (.data, .index, .bloom)
@@ -172,8 +172,7 @@ public class DiskStoreServiceImpl implements DiskStoreService {
             try {
                 put(t, u);
             } catch (Exception e) {
-                // TODO: Handle this better
-                e.printStackTrace();
+                logger.error("Failed to insert key: '" + t + "' during bulk insert", e);
             }
         });
     }
@@ -203,7 +202,7 @@ public class DiskStoreServiceImpl implements DiskStoreService {
                 // If we found a tombstone, stop searching older SSTables and propagate the delete immediately
                 throw e;
             } catch (Exception e) {
-                logger.error("Error searching SSTable for key: " + key, e);
+                logger.error("Error searching SSTable sst_" + sst.getSstCounter() + " for key: " + key, e);
             }
         }
 
