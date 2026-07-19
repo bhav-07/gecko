@@ -32,6 +32,8 @@ public class MemTableRecord {
             int checksum = calculateChecksum();
             this.header.setCheckSum(checksum);
         } catch (Exception e) {
+            // TODO: Create a global exception handler for this project and throw a custom
+            // exception instead of RuntimeException
             throw new RuntimeException("Failed to calculate checksum", e);
         }
     }

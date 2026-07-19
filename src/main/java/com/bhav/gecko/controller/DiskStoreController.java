@@ -1,6 +1,5 @@
 package com.bhav.gecko.controller;
 
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -26,8 +25,11 @@ import java.util.Set;
 @RequestMapping("/api/memtable")
 public class DiskStoreController {
 
-    @Autowired
-    private DiskStoreServiceImpl diskStoreService;
+    private final DiskStoreServiceImpl diskStoreService;
+
+    DiskStoreController(DiskStoreServiceImpl diskStoreService) {
+        this.diskStoreService = diskStoreService;
+    }
 
     @PostMapping("/put")
     public ResponseEntity<String> put(@RequestBody PutRequest request) {

@@ -2,12 +2,9 @@ package com.bhav.gecko.store.memtable;
 
 import java.util.*;
 
-import org.springframework.stereotype.Service;
-
 import com.bhav.gecko.dto.MemtableStats;
 import com.bhav.gecko.exception.KeyNotFoundException;
 
-@Service
 public class Memtable {
     private TreeMap<String, MemTableRecord> data;
     private int sizeInBytes;

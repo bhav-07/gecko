@@ -31,9 +31,7 @@ import jakarta.annotation.PreDestroy;
 @Service
 public class DiskStoreServiceImpl implements DiskStoreService {
 
-
-    @Autowired
-    private Memtable memtable;
+    private Memtable memtable = new Memtable();
     private WriteAheadLog activeWal;
     private static final Log logger = LogFactory.getLog(DiskStoreServiceImpl.class);
     private final List<Memtable> immutableMemtables = new CopyOnWriteArrayList<>();
@@ -43,7 +41,7 @@ public class DiskStoreServiceImpl implements DiskStoreService {
     private final AtomicInteger walSegmentCounter = new AtomicInteger(0);
 
     @Value("${sst.directory}")
-    private static String SST_DIR;
+    private String SST_DIR;
 
     @Value("${wal.directory}")
     private String WAL_DIR;
@@ -90,20 +88,21 @@ public class DiskStoreServiceImpl implements DiskStoreService {
 
             this.activeWal = WriteAheadLog.createSegment(WAL_DIR);
             this.memtable = new Memtable();
-
             flushExecutor.submit(() -> flushImmutable(frozenMemtable, frozenWAL));
         }
     }
 
     private void flushImmutable(Memtable toFlush, WriteAheadLog segmentWAL) {
         try {
+            logger.info("Flush initiated for active memtable>>>>>>>>");
             List<MemTableRecord> entries = new ArrayList<>(toFlush.getAllKVPairs().values());
             // Write SSTable files to disk
             long sstId = System.currentTimeMillis();
             SSTable sst = SSTable.initSSTableOnDisk(entries, SST_DIR);
+            // TODO: Implement manifest update logic here
             // 2. Update manifest — this is the commit point
-            //    After this, the SSTable is officially part of the database
-                // 3. Add to in-memory SSTable list for reads (at front = newest)
+            // After this, the SSTable is officially part of the database
+            // 3. Add to in-memory SSTable list for reads (at front = newest)
             sstables.add(0, sst);
             // 4. Remove from immutable list — no longer needed for read path
             immutableMemtables.remove(toFlush);
@@ -139,7 +138,21 @@ public class DiskStoreServiceImpl implements DiskStoreService {
                 return imm.get(key);
             }
         }
-        // TODO: SSTables
+        // SSTables
+        for (SSTable sst : sstables) {
+            try {
+                MemTableRecord record = sst.search(key);
+                if (record != null) {
+                    if (record.isDeleted()) {
+                        throw new KeyNotFoundException("Key has been deleted: " + key);
+                    }
+                    return record;
+                }
+            } catch (Exception e) {
+                logger.error("Error searching SSTable for key: " + key, e);
+            }
+        }
+        
         throw new KeyNotFoundException("Key not found: " + key);
     }
 
@@ -150,18 +163,19 @@ public class DiskStoreServiceImpl implements DiskStoreService {
                 existingRecord.getHeader().getTimeStamp(), true);
 
         activeWal.appendWALOperation(Operation.DELETE, tombstoneRecord);
-        memtable.delete(key,tombstoneRecord);
+        memtable.delete(key, tombstoneRecord);
     }
 
     public void recoverFromWAL() throws Exception {
         File walDir = new File(WAL_DIR);
-        if (!walDir.exists()) return;
+        if (!walDir.exists())
+            return;
         File[] segments = walDir.listFiles((d, name) -> name.startsWith("wal_") && name.endsWith(".log"));
-        if (segments == null || segments.length == 0) return;
+        if (segments == null || segments.length == 0)
+            return;
         // Sort by timestamp embedded in filename
-        Arrays.sort(segments, Comparator.comparingLong(f ->
-                Long.parseLong(f.getName().replace("wal_", "").replace(".log", ""))
-        ));
+        Arrays.sort(segments,
+                Comparator.comparingLong(f -> Long.parseLong(f.getName().replace("wal_", "").replace(".log", ""))));
         for (File segment : segments) {
             WriteAheadLog wal = new WriteAheadLog(segment.getAbsolutePath());
             List<WALEntry> entries = wal.readAllEntries();
@@ -206,7 +220,8 @@ public class DiskStoreServiceImpl implements DiskStoreService {
     public void cleanup() {
         flushExecutor.shutdown();
         try {
-            if (activeWal != null) activeWal.close();
+            if (activeWal != null)
+                activeWal.close();
         } catch (IOException e) {
             logger.error("Error closing active WAL: " + e.getMessage());
         }
