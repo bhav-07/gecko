@@ -10,8 +10,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import com.bhav.gecko.store.memtable.Header;
 import com.bhav.gecko.store.memtable.MemTableRecord;
-import org.springframework.beans.factory.annotation.Value;
 
 public class SSTable {
 
@@ -30,7 +30,6 @@ public class SSTable {
     private Integer sizeInBytes = 0;
     private List<SparseIndex> sparseKeys = new ArrayList<>();
 
-
     public SSTable(int sstCounter) {
         this.sstCounter = sstCounter;
     }
@@ -43,15 +42,99 @@ public class SSTable {
         return table;
     }
 
-    public static SSTable loadFromDisk(String sstDir, long sstId) {
+    public static SSTable loadFromDisk(String sstDir, int sstCounter) throws IOException {
+        SSTable table = new SSTable(sstCounter);
+        table.initTableFiles(sstDir);
+        table.sparseKeys = loadSparseIndexFile(table.indexFile);
+        table.bloomFilter.loadFromFile(0);
+        return table;
+    }
+
+    public MemTableRecord search(String key) throws Exception {
+        // 1. Bloom Filter Check
+        if (!bloomFilter.mightContain(key)) {
+            return null;
+        }
+
+        // 2. Sparse Index Binary Search
+        if (sparseKeys.isEmpty()) {
+            return null;
+        }
+
+        int left = 0;
+        int right = sparseKeys.size() - 1;
+        int bestIdx = 0;
+
+        while (left <= right) {
+            int mid = left + (right - left) / 2;
+            int cmp = sparseKeys.get(mid).getKey().compareTo(key);
+
+            if (cmp == 0) {
+                bestIdx = mid;
+                break;
+            } else if (cmp < 0) {
+                bestIdx = mid; // Candidate (largest key <= target)
+                left = mid + 1;
+            } else {
+                right = mid - 1;
+            }
+        }
+
+        long startOffset = sparseKeys.get(bestIdx).getOffsetInbytes();
+        long endOffset = (bestIdx + 1 < sparseKeys.size())
+                ? sparseKeys.get(bestIdx + 1).getOffsetInbytes()
+                : dataFile.length();
+
+        // 3. Sequential Disk Scan
+        dataFile.seek(startOffset);
+
+        while (dataFile.getFilePointer() < endOffset) {
+            byte[] headerBytes = new byte[Header.HEADER_SIZE];
+            if (dataFile.read(headerBytes) < headerBytes.length) {
+                break;
+            }
+
+            Header header = new Header();
+            header.decodeHeader(headerBytes);
+
+            int keySize = header.getKeySize();
+            int valueSize = header.getValueSize();
+
+            int totalSize = Header.HEADER_SIZE + keySize + valueSize;
+            byte[] recordBytes = new byte[totalSize];
+            System.arraycopy(headerBytes, 0, recordBytes, 0, headerBytes.length);
+
+            dataFile.readFully(recordBytes, headerBytes.length, keySize + valueSize);
+
+            MemTableRecord record = MemTableRecord.decodeKV(recordBytes);
+
+            int cmp = record.getKey().compareTo(key);
+            if (cmp == 0) {
+                return record;
+            } else if (cmp > 0) {
+                // Since the SSTable is sorted, if we encounter a key greater than our target,
+                // it's not here.
+                return null;
+            }
+        }
+
         return null;
     }
 
+    public void close() throws IOException {
+        if (dataFile != null) {
+            dataFile.close();
+        }
+        if (indexFile != null) {
+            indexFile.close();
+        }
+    }
+
     public void initTableFiles(String directory) throws IOException {
-        File storageDir = new File("./storage");
+        File storageDir = new File(directory);
         if (!storageDir.exists()) {
             if (!storageDir.mkdirs()) {
-                throw new IOException("Failed to create storage directory");
+                throw new IOException("Failed to create storage directory: " + directory);
             }
         }
 
@@ -71,7 +154,7 @@ public class SSTable {
     }
 
     private String getNextSstFilename(String directory, int sstCounter) {
-        return String.format("../%s/sst_%d", directory, sstCounter);
+        return directory + File.separator + "sst_" + sstCounter;
     }
 
     private static void writeEntriesToSST(List<MemTableRecord> sortedEntries, SSTable table)
@@ -102,14 +185,15 @@ public class SSTable {
         // Write encoded entries to the SSTable data file
         table.dataFile.write(buf.toByteArray());
         // Set up sparse index
-         populateSparseIndexFile(table.sparseKeys, table.indexFile);
+        populateSparseIndexFile(table.sparseKeys, table.indexFile);
 
         // Set up + populate bloom filter
         table.bloomFilter.initBloomFilterAttrs(sortedEntries.size());
-         populateBloomFilter(sortedEntries, table.bloomFilter);
+        populateBloomFilter(sortedEntries, table.bloomFilter);
     }
 
-    private static void populateSparseIndexFile(List<SparseIndex> sparseKeys, RandomAccessFile indexFile) throws  IOException {
+    private static void populateSparseIndexFile(List<SparseIndex> sparseKeys, RandomAccessFile indexFile)
+            throws IOException {
         for (SparseIndex entry : sparseKeys) {
             byte[] keyBytes = entry.getKey().getBytes();
             int keySize = keyBytes.length;
@@ -124,7 +208,8 @@ public class SSTable {
         }
     }
 
-    private static void populateBloomFilter(List<MemTableRecord> sortedEntries, BloomFilterStore bloomFilter) throws IOException {
+    private static void populateBloomFilter(List<MemTableRecord> sortedEntries, BloomFilterStore bloomFilter)
+            throws IOException {
         for (MemTableRecord record : sortedEntries) {
             bloomFilter.add(record.getKey());
         }
@@ -160,7 +245,7 @@ public class SSTable {
     }
 
     private static void loadBloomFilter(BloomFilterStore bloomFilter,
-                                        int numElements) throws IOException {
+            int numElements) throws IOException {
         bloomFilter.loadFromFile(numElements);
     }
 
