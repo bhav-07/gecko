@@ -103,7 +103,7 @@ public class MemTableRecord {
         buffer.order(ByteOrder.LITTLE_ENDIAN);
 
         buffer.put(header.getTombstone());
-        buffer.putInt(header.getTimeStamp());
+        buffer.putLong(header.getTimeStamp());
         buffer.putInt(header.getKeySize());
         buffer.putInt(header.getValueSize());
 
