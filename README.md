@@ -1,68 +1,67 @@
-# Gecko 🦎
+# Gecko
 
-Gecko is a distributed, persistent NoSQL key-value store built with Java and Spring Boot. It implements a Log-Structured Merge (LSM) tree architecture, featuring in-memory Memtables, Write-Ahead Logs (WAL) for durability, and Bloom Filters for efficient lookups.
+Gecko is a persistent NoSQL key-value storage engine built in Java and Spring Boot. It uses a Log-Structured Merge (LSM) tree architecture designed for high write throughput and crash recovery.
 
-## 🚀 Features
+![System Architecture](sys%20arch.png)
 
-- **LSM Tree Architecture**: Efficient write handling using in-memory Memtables.
-- **Persistence**: Data durability is ensured through a Write-Ahead Log (WAL).
-- **Crash Recovery**: Automatic recovery from WAL on startup.
-- **Bulk Operations**: Optimized bulk insert capabilities.
-- **Bloom Filters**: (In Development) Probabilistic data structure to reduce disk seeks for non-existent keys.
-- **REST API**: Simple HTTP interface for interacting with the store.
+## Current Features
 
-## 🛠 Tech Stack
+* **Thread-Safe Memtable**: Uses `ConcurrentSkipListMap` to handle concurrent reads and writes safely.
+* **Write-Ahead Log (WAL)**: All writes are fsynced to a WAL segment before being acknowledged. The system provides zero data loss across crashes and restarts.
+* **SSTables**: Immutable data files on disk that contain a sparse index and a bloom filter to optimize read paths and minimize physical disk seeks.
+* **Crash Recovery**: Automatically replays un-flushed WAL segments on startup, flushes recovered data to a fresh SSTable, and cleans up old log segments.
+* **Manifest**: Tracks all active SSTables across server restarts to prevent data amnesia.
+* **Blind Deletes**: Deletes are implemented as fast tombstone writes rather than expensive read-then-modify operations.
 
-- **Java 21**
-- **Spring Boot 3.5.4**
-- **Apache Commons Logging**
-- **Google Guava** (Bloom Filters)
+*Note: Compaction is currently in development.*
 
-## 📦 Getting Started
+## Tech Stack
+
+* **Java 21**
+* **Spring Boot 3.5.4**
+* **Apache Commons Logging & SLF4J**
+* **Google Guava** (Bloom Filters)
+
+## Getting Started
 
 ### Prerequisites
 
-- Java 21 or higher
-- Maven
+* Java 21+
+* Maven
 
-### Installation
+### Installation & Running
 
-1. Clone the repository:
-   ```bash
-   git clone <repository-url>
-   cd gecko/gecko
-   ```
+Clone the repository and build the project:
 
-2. Build the project:
-   ```bash
-   ./mvnw clean install
-   ```
+```bash
+git clone <repository-url>
+cd gecko
+./mvnw clean install
+```
 
-### Running the Application
-
-Start the Spring Boot application:
+Start the server:
 
 ```bash
 ./mvnw spring-boot:run
 ```
 
-The server will start on port `8080` (default).
+The server runs on port 8080 by default. The storage engine will automatically create `./sst` and `./wal_data` directories in the project root to store its data.
 
-## ⚙️ Configuration
+## Configuration
 
-Key configuration settings in `src/main/resources/application.properties`:
+Configuration is managed in `src/main/resources/application.properties`:
 
 | Property | Description | Default |
 |----------|-------------|---------|
-| `wal.directory` | Directory where Write-Ahead Logs are stored | `./wal_data` |
-| `memtable.flush.threshold` | Size threshold (in bytes) to flush Memtable (Dev mode) | `3000` |
+| `wal.directory` | Directory for Write-Ahead Logs | `./wal_data` |
+| `sst.directory` | Directory for SSTables and Manifest | `./sst` |
+| `memtable.flush.threshold` | Size threshold in bytes to trigger a flush | `3000` |
 
-## 🔌 API Reference
+## API Reference
 
 ### Store Value
 **POST** `/api/memtable/put`
 
-Request Body:
 ```json
 {
   "key": "user:123",
@@ -73,7 +72,6 @@ Request Body:
 ### Get Value
 **GET** `/api/memtable/get/{key}`
 
-Response:
 ```json
 {
   "key": "user:123",
@@ -86,12 +84,11 @@ Response:
 ### Delete Value
 **DELETE** `/api/memtable/delete/{key}`
 
-Marks the key as deleted (tombstone) in Memtable and WAL.
+Writes a tombstone record to mark the key as deleted.
 
 ### Bulk Insert
 **POST** `/api/memtable/bulk`
 
-Request Body:
 ```json
 {
   "data": {
@@ -101,21 +98,15 @@ Request Body:
 }
 ```
 
-### Get All (Debug)
-**GET** `/api/memtable/all`
-
-Returns all key-value pairs currently in the Memtable.
-
-### Get Stats
+### Get Memtable Stats
 **GET** `/api/memtable/stats`
 
-Returns current Memtable statistics (size, entry count, etc.).
+Returns the current active memtable statistics (size in bytes, entry count).
 
-## 📂 Project Structure
+## Internal Structure
 
-- `src/main/java/com/bhav/gecko/store`: Core storage logic.
-  - `memtable`: In-memory data structure implementation.
-  - `wal`: Write-Ahead Log management.
-  - `sstable`: Sorted String Table and Bloom Filter components.
-  - `diskstore`: Disk-based storage coordination.
-- `src/main/java/com/bhav/gecko/controller`: REST API endpoints.
+* `memtable/`: In-memory thread-safe skip list.
+* `wal/`: Write-Ahead Log management and segment rotation.
+* `sstable/`: Sorted String Table writers and read iterators, including bloom filters and sparse indexing.
+* `manifest/`: Crash-safe ledger of active SSTable files.
+* `diskstore/`: The coordinator layer managing the flow of data from memtable to flush tasks to disk.
