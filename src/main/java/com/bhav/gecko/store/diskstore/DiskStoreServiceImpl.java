@@ -118,20 +118,20 @@ public class DiskStoreServiceImpl implements DiskStoreService {
 
         if (memtable.getSizeInBytes() >= MEMTABLE_FLUSH_THRESHOLD) {
             synchronized (flushLock) {
-        if (memtable.getSizeInBytes() >= MEMTABLE_FLUSH_THRESHOLD) {
-            logger.warn("Flush threshold for memtable exceeded!");
-            logger.info(memtable.toString());
-            WriteAheadLog frozenWAL = this.activeWal;
-            Memtable frozenMemtable = this.memtable;
+                if (memtable.getSizeInBytes() >= MEMTABLE_FLUSH_THRESHOLD) {
+                    logger.warn("Flush threshold for memtable exceeded!");
+                    logger.info(memtable.toString());
+                    WriteAheadLog frozenWAL = this.activeWal;
+                    Memtable frozenMemtable = this.memtable;
 
-            this.activeWal = WriteAheadLog.createSegment(WAL_DIR);
-            this.memtable = new Memtable();
+                    this.activeWal = WriteAheadLog.createSegment(WAL_DIR);
+                    this.memtable = new Memtable();
 
-            // Track the frozen memtable so reads during the flush window still find its
-            // keys.
-            // flushImmutable() will remove it from this list once it's safely on disk.
-            immutableMemtables.add(frozenMemtable);
-            flushExecutor.submit(() -> flushImmutable(frozenMemtable, frozenWAL));
+                    // Track the frozen memtable so reads during the flush window still find its
+                    // keys.
+                    // flushImmutable() will remove it from this list once it's safely on disk.
+                    immutableMemtables.add(frozenMemtable);
+                    flushExecutor.submit(() -> flushImmutable(frozenMemtable, frozenWAL));
                 }
             }
         }
@@ -208,10 +208,8 @@ public class DiskStoreServiceImpl implements DiskStoreService {
     }
 
     public void delete(String key) throws Exception {
-        MemTableRecord existingRecord = this.get(key);
-
-        MemTableRecord tombstoneRecord = new MemTableRecord(key, existingRecord.getValue(),
-                existingRecord.getHeader().getTimeStamp(), true);
+        MemTableRecord tombstoneRecord = new MemTableRecord(key, "",
+                System.currentTimeMillis(), true);
 
         activeWal.appendWALOperation(Operation.DELETE, tombstoneRecord);
         memtable.delete(key, tombstoneRecord);
