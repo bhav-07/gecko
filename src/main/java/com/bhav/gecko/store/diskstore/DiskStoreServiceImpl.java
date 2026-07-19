@@ -11,7 +11,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import com.bhav.gecko.store.sstable.SSTable;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.springframework.beans.factory.annotation.Autowired;
+import com.bhav.gecko.store.manifest.Manifest;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -33,6 +33,7 @@ public class DiskStoreServiceImpl implements DiskStoreService {
 
     private Memtable memtable = new Memtable();
     private WriteAheadLog activeWal;
+    private Manifest manifest;
     private static final Log logger = LogFactory.getLog(DiskStoreServiceImpl.class);
     private final List<Memtable> immutableMemtables = new CopyOnWriteArrayList<>();
     private final ExecutorService flushExecutor = Executors.newSingleThreadExecutor();
@@ -52,13 +53,49 @@ public class DiskStoreServiceImpl implements DiskStoreService {
     @PostConstruct
     public void initialize() {
         try {
+            // 1. Load manifest and recover active SSTables from disk
+            this.manifest = new Manifest(SST_DIR);
+            manifest.load();
+            loadSSTTablesFromManifest();
+
+            // 2. Replay WAL to restore any writes that hadn't been flushed yet
             recoverFromWAL();
+
+            // 3. Create a fresh WAL segment for this session
             this.activeWal = WriteAheadLog.createSegment(WAL_DIR);
             logger.info("Initialized: " + sstables.size() + " SSTables loaded");
         } catch (Exception e) {
-            logger.error("WAL recovery failed: " + e.getMessage());
-            throw new RuntimeException("Critical: WAL recovery failed", e);
+            logger.error("Initialization failed: " + e.getMessage());
+            throw new RuntimeException("Critical: Initialization failed", e);
         }
+    }
+
+    /**
+     * Loads all active SSTables from the manifest into memory.
+     * Only bloom filters and sparse indexes are loaded — the actual .data
+     * files stay on disk and are accessed via seek() during reads.
+     */
+    private void loadSSTTablesFromManifest() throws IOException {
+        List<Integer> activeSSTIds = manifest.getActiveSSTIds();
+
+        // Sync the SSTable counter so new flushes don't collide with existing files
+        int maxId = manifest.getMaxSSTId();
+        SSTable.syncCounter(maxId);
+
+        for (int sstId : activeSSTIds) {
+            try {
+                SSTable sst = SSTable.loadFromDisk(SST_DIR, sstId);
+                // Add to the front so the list stays newest-first (add(0,...) convention)
+                sstables.add(0, sst);
+                logger.info("Loaded SSTable from disk: sst_" + sstId);
+            } catch (IOException e) {
+                // Log but don't crash - a corrupted SSTable shouldn't bring down the server.
+                // The data is still in the WAL if it hadn't been flushed cleanly.
+                logger.error("Failed to load sst_" + sstId + " — skipping: " + e.getMessage());
+            }
+        }
+
+        logger.info("SSTable recovery complete: " + sstables.size() + " tables loaded");
     }
 
     public Map<String, MemTableRecord> getAllKVPairs() {
@@ -88,6 +125,11 @@ public class DiskStoreServiceImpl implements DiskStoreService {
 
             this.activeWal = WriteAheadLog.createSegment(WAL_DIR);
             this.memtable = new Memtable();
+
+            // Track the frozen memtable so reads during the flush window still find its
+            // keys.
+            // flushImmutable() will remove it from this list once it's safely on disk.
+            immutableMemtables.add(frozenMemtable);
             flushExecutor.submit(() -> flushImmutable(frozenMemtable, frozenWAL));
         }
     }
@@ -96,19 +138,25 @@ public class DiskStoreServiceImpl implements DiskStoreService {
         try {
             logger.info("Flush initiated for active memtable>>>>>>>>");
             List<MemTableRecord> entries = new ArrayList<>(toFlush.getAllKVPairs().values());
-            // Write SSTable files to disk
-            long sstId = System.currentTimeMillis();
+
+            // 1. Write SSTable files to disk (.data, .index, .bloom)
             SSTable sst = SSTable.initSSTableOnDisk(entries, SST_DIR);
-            // TODO: Implement manifest update logic here
-            // 2. Update manifest — this is the commit point
-            // After this, the SSTable is officially part of the database
+
+            // 2. Record in manifest, this is the commit point.
+            // After this line, the SSTable is officially part of the database
+            // and will be recovered on the next restart.
+            manifest.addEntry(sst.getSstCounter());
+
             // 3. Add to in-memory SSTable list for reads (at front = newest)
             sstables.add(0, sst);
-            // 4. Remove from immutable list — no longer needed for read path
+
+            // 4. Remove from immutable list, no longer needed for read path
             immutableMemtables.remove(toFlush);
-            // 5. Delete WAL segment — data is safely in SSTable now
+
+            // 5. Delete WAL segment, data is safely on disk and in the manifest
             segmentWAL.deleteSegment();
-            logger.info("Flush complete: sst_" + sstId);
+
+            logger.info("Flush complete: sst_" + sst.getSstCounter());
         } catch (Exception e) {
             logger.error("Flush failed, WAL segment kept: " + e.getMessage());
             // toFlush stays in immutableMemtables — still readable
@@ -152,7 +200,7 @@ public class DiskStoreServiceImpl implements DiskStoreService {
                 logger.error("Error searching SSTable for key: " + key, e);
             }
         }
-        
+
         throw new KeyNotFoundException("Key not found: " + key);
     }
 
@@ -203,18 +251,6 @@ public class DiskStoreServiceImpl implements DiskStoreService {
                 throw new Exception("Unknown operation type: " + op);
         }
     }
-
-    // TODO: What is even this??
-    // public void clear() {
-    // try {
-    // java.lang.reflect.Method clearMethod =
-    // Memtable.class.getDeclaredMethod("clear");
-    // clearMethod.setAccessible(true);
-    // clearMethod.invoke(memtable);
-    // } catch (Exception e) {
-    // throw new RuntimeException("Failed to clear memtable", e);
-    // }
-    // }
 
     @PreDestroy
     public void cleanup() {

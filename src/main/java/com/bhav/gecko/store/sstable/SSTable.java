@@ -34,6 +34,19 @@ public class SSTable {
         this.sstCounter = sstCounter;
     }
 
+    /**
+     * Advances the global SSTable counter to at least the given value.
+     * Called during startup so new flushes don't produce filenames that
+     * already exist on disk from a previous run.
+     */
+    public static void syncCounter(int minValue) {
+        int current = sstTableCounter.get();
+        while (current < minValue) {
+            if (sstTableCounter.compareAndSet(current, minValue)) break;
+            current = sstTableCounter.get();
+        }
+    }
+
     public static SSTable initSSTableOnDisk(List<MemTableRecord> entries, String SST_DIR) throws IOException {
         int counter = sstTableCounter.incrementAndGet();
         SSTable table = new SSTable(counter);
