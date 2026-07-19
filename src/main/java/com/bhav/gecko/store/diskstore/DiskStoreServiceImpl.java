@@ -233,6 +233,26 @@ public class DiskStoreServiceImpl implements DiskStoreService {
             }
             wal.close();
         }
+
+        // 1. If we recovered any data, flush it immediately to an SSTable
+        if (!memtable.isEmpty()) {
+            logger.info("Flushing recovered memtable to SSTable...");
+            List<MemTableRecord> entries = new ArrayList<>(memtable.getAllKVPairs().values());
+            SSTable sst = SSTable.initSSTableOnDisk(entries, SST_DIR);
+            manifest.addEntry(sst.getSstCounter());
+            sstables.add(0, sst);
+            
+            // Start fresh
+            this.memtable = new Memtable();
+        }
+
+        // 2. Now that data is safely on disk (or memtable was empty), delete all old WAL segments
+        for (File segment : segments) {
+            if (!segment.delete()) {
+                logger.warn("Failed to delete recovered WAL segment: " + segment.getName());
+            }
+        }
+        logger.info("WAL recovery complete. Cleaned up " + segments.length + " segments.");
     }
 
     private void applyWALEntry(WALEntry entry) throws Exception {
