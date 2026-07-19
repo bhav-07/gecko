@@ -2,7 +2,6 @@ package com.bhav.gecko.store.wal;
 
 public enum Operation {
     PUT((byte) 1),
-    GET((byte) 2),
     DELETE((byte) 3);
 
     private final byte value;

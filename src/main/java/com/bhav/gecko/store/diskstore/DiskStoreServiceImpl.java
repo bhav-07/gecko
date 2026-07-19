@@ -1,10 +1,12 @@
 package com.bhav.gecko.store.diskstore;
 
+import java.io.File;
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import com.bhav.gecko.store.sstable.SSTable;
 import org.apache.commons.logging.Log;
@@ -29,11 +31,22 @@ import jakarta.annotation.PreDestroy;
 @Service
 public class DiskStoreServiceImpl implements DiskStoreService {
 
+
     @Autowired
     private Memtable memtable;
     private WriteAheadLog activeWal;
     private static final Log logger = LogFactory.getLog(DiskStoreServiceImpl.class);
-    private List<Memtable> immutableMemtables = new ArrayList<>();
+    private final List<Memtable> immutableMemtables = new CopyOnWriteArrayList<>();
+    private final ExecutorService flushExecutor = Executors.newSingleThreadExecutor();
+    private final List<SSTable> sstables = new ArrayList<>();
+
+    private final AtomicInteger walSegmentCounter = new AtomicInteger(0);
+
+    @Value("${sst.directory}")
+    private static String SST_DIR;
+
+    @Value("${wal.directory}")
+    private String WAL_DIR;
 
     @Value("${memtable.flsuh.threshold}")
     private int MEMTABLE_FLUSH_THRESHOLD;
@@ -41,9 +54,9 @@ public class DiskStoreServiceImpl implements DiskStoreService {
     @PostConstruct
     public void initialize() {
         try {
-            this.activeWal = new WriteAheadLog(); // safe now, WAL_DIR is injected
             recoverFromWAL();
-            logger.debug("Memtable service initialized with WAL recovery");
+            this.activeWal = WriteAheadLog.createSegment(WAL_DIR);
+            logger.info("Initialized: " + sstables.size() + " SSTables loaded");
         } catch (Exception e) {
             logger.error("WAL recovery failed: " + e.getMessage());
             throw new RuntimeException("Critical: WAL recovery failed", e);
@@ -72,24 +85,35 @@ public class DiskStoreServiceImpl implements DiskStoreService {
         if (memtable.getSizeInBytes() >= MEMTABLE_FLUSH_THRESHOLD) {
             logger.warn("Flush threshold for memtable exceeded!");
             logger.info(memtable.toString());
-            immutableMemtables.add(memtable);
-            flushMemtable();
-            logger.warn("Flushed memtable");
+            WriteAheadLog frozenWAL = this.activeWal;
+            Memtable frozenMemtable = this.memtable;
+
+            this.activeWal = WriteAheadLog.createSegment(WAL_DIR);
+            this.memtable = new Memtable();
+
+            flushExecutor.submit(() -> flushImmutable(frozenMemtable, frozenWAL));
         }
     }
 
-    public void flushMemtable() {
-        for (Memtable immutable : immutableMemtables) {
-            try {
-                List<MemTableRecord> entries = new ArrayList<>(immutable.getAllKVPairs().values());
-                SSTable.initSSTableOnDisk(entries);
-                immutableMemtables.remove(immutable);
-                activeWal.truncateWAL();
-                logger.info("Flushed Memtable to SSTable successfully");
-            } catch (IOException e) {
-                logger.error("Failed to flush Memtable to disk: " + e.getMessage());
-                throw new RuntimeException("Critical: flush failed", e);
-            }
+    private void flushImmutable(Memtable toFlush, WriteAheadLog segmentWAL) {
+        try {
+            List<MemTableRecord> entries = new ArrayList<>(toFlush.getAllKVPairs().values());
+            // Write SSTable files to disk
+            long sstId = System.currentTimeMillis();
+            SSTable sst = SSTable.initSSTableOnDisk(entries, SST_DIR);
+            // 2. Update manifest — this is the commit point
+            //    After this, the SSTable is officially part of the database
+                // 3. Add to in-memory SSTable list for reads (at front = newest)
+            sstables.add(0, sst);
+            // 4. Remove from immutable list — no longer needed for read path
+            immutableMemtables.remove(toFlush);
+            // 5. Delete WAL segment — data is safely in SSTable now
+            segmentWAL.deleteSegment();
+            logger.info("Flush complete: sst_" + sstId);
+        } catch (Exception e) {
+            logger.error("Flush failed, WAL segment kept: " + e.getMessage());
+            // toFlush stays in immutableMemtables — still readable
+            // segmentWAL stays on disk — recoverable after crash
         }
     }
 
@@ -105,11 +129,22 @@ public class DiskStoreServiceImpl implements DiskStoreService {
     }
 
     public MemTableRecord get(String key) throws KeyNotFoundException {
-        return memtable.get(key);
+        // Active memtable
+        if (memtable.containsKey(key)) {
+            return memtable.get(key);
+        }
+        // Immutable memtables
+        for (Memtable imm : immutableMemtables) {
+            if (imm.containsKey(key)) {
+                return imm.get(key);
+            }
+        }
+        // TODO: SSTables
+        throw new KeyNotFoundException("Key not found: " + key);
     }
 
     public void delete(String key) throws Exception {
-        MemTableRecord existingRecord = memtable.get(key);
+        MemTableRecord existingRecord = this.get(key);
 
         MemTableRecord tombstoneRecord = new MemTableRecord(key, existingRecord.getValue(),
                 existingRecord.getHeader().getTimeStamp(), true);
@@ -119,33 +154,22 @@ public class DiskStoreServiceImpl implements DiskStoreService {
     }
 
     public void recoverFromWAL() throws Exception {
-        if (!activeWal.hasRecoveryData()) {
-            logger.debug("No WAL data found");
-            return;
-        }
-
-        logger.debug("Starting WAL recovery...");
-        List<WALEntry> entries = activeWal.readAllEntries();
-
-        int appliedEntries = 0;
-        int skippedEntries = 0;
-
-        for (WALEntry entry : entries) {
-            try {
+        File walDir = new File(WAL_DIR);
+        if (!walDir.exists()) return;
+        File[] segments = walDir.listFiles((d, name) -> name.startsWith("wal_") && name.endsWith(".log"));
+        if (segments == null || segments.length == 0) return;
+        // Sort by timestamp embedded in filename
+        Arrays.sort(segments, Comparator.comparingLong(f ->
+                Long.parseLong(f.getName().replace("wal_", "").replace(".log", ""))
+        ));
+        for (File segment : segments) {
+            WriteAheadLog wal = new WriteAheadLog(segment.getAbsolutePath());
+            List<WALEntry> entries = wal.readAllEntries();
+            for (WALEntry entry : entries) {
                 applyWALEntry(entry);
-                appliedEntries++;
-            } catch (Exception e) {
-                logger.error("Failed to apply WAL entry: " + entry + " - " + e.getMessage());
-                skippedEntries++;
             }
+            wal.close();
         }
-
-        logger.info(String.format("WAL recovery completed. Applied: %d, Skipped:%d", appliedEntries, skippedEntries));
-
-        // TODO: Dont truncate here, because if the data isnt written to sstable it can
-        // lead to data loss
-        // only truncate when we flush to memtable
-        // wal.truncateWAL();
     }
 
     private void applyWALEntry(WALEntry entry) throws Exception {
@@ -159,11 +183,6 @@ public class DiskStoreServiceImpl implements DiskStoreService {
 
             case DELETE:
                 memtable.delete(record.getKey(), record);
-                break;
-
-            case GET:
-                // GET operations typically aren't replayed during recovery
-                // since they don't modify state
                 break;
 
             default:
@@ -185,10 +204,11 @@ public class DiskStoreServiceImpl implements DiskStoreService {
 
     @PreDestroy
     public void cleanup() {
+        flushExecutor.shutdown();
         try {
-            activeWal.close();
+            if (activeWal != null) activeWal.close();
         } catch (IOException e) {
-            System.err.println("Error closing WAL: " + e.getMessage());
+            logger.error("Error closing active WAL: " + e.getMessage());
         }
     }
 }

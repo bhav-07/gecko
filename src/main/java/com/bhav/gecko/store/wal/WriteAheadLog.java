@@ -2,67 +2,54 @@ package com.bhav.gecko.store.wal;
 
 import com.bhav.gecko.store.memtable.Header;
 import com.bhav.gecko.store.memtable.MemTableRecord;
-import org.springframework.beans.factory.annotation.Value;
 
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
 public class WriteAheadLog {
-    private static final int WAL_BATCH_THRESHOLD = 1024 * 1024 * 3; // 3MB
 
     private String filePath;
-    private List<Byte> opsBatch;
-    private int size;
+    private FileOutputStream fileStream;
 
-    @Value("${wal.directory}")
-    private String walDirectory;
+    public WriteAheadLog(String filePath) throws IOException {
+        this.filePath = filePath;
+        Path path = Paths.get(filePath);
 
-    public WriteAheadLog() throws IOException {
-        this.filePath = walDirectory + "/wal.log";
-        this.opsBatch = new ArrayList<>();
-        this.size = 0;
-
-        Files.createDirectories(Paths.get(walDirectory));
-        if (!Files.exists(Paths.get(filePath))) {
-            Files.createFile(Paths.get(filePath));
+        Files.createDirectories(path.getParent());
+        if (!Files.exists(path)) {
+            Files.createFile(path);
         }
+        this.fileStream = new FileOutputStream(path.toFile(), true);
+    }
+
+    public static WriteAheadLog createSegment(String walDirectory) throws IOException {
+        long timestamp = System.currentTimeMillis();
+        String filePath = walDirectory + "/wal_" + timestamp + ".log";
+        return new WriteAheadLog(filePath);
     }
 
     public void appendWALOperation(Operation op, MemTableRecord record) throws Exception {
-        List<Byte> buffer = new ArrayList<>();
-
-        buffer.add(op.getValue());
-
         byte[] encodedRecord = record.encodeKV();
-        for (byte b : encodedRecord) {
-            buffer.add(b);
-        }
-
-        opsBatch.addAll(buffer);
-        size += buffer.size();
-
-        if (size >= WAL_BATCH_THRESHOLD) {
-            flushToDisk();
-        }
-    }
-
-    private void flushToDisk() throws IOException {
-        if (opsBatch.isEmpty())
-            return;
-
-        byte[] data = new byte[opsBatch.size()];
-        for (int i = 0; i < opsBatch.size(); i++) {
-            data[i] = opsBatch.get(i);
-        }
-
-        Files.write(Paths.get(filePath), data, StandardOpenOption.APPEND);
-
-        clearBatch();
+        byte[] entry = new byte[1 + encodedRecord.length];
+        entry[0] = op.getValue();
+        System.arraycopy(encodedRecord, 0, entry, 1, encodedRecord.length);
+        fileStream.write(entry);
+        fileStream.flush(); // push to OS
+        fileStream.getFD().sync(); // force OS to write to physical disk
+        // getFD().sync() is critical. Without it, the OS can still buffer in its page
+        // cache and lose data on power failure.
+        // This is how every real WAL works (LevelDB, RocksDB, Postgres all do fsync).
+        // TODO: getFB().sync has some nuances when it comes to speed vs durability
+        // tradeoffs
+        // Try to also explore the path of batch writes as Redis also does something
+        // similar.
+        // Also look at how Kafka does WAL case study.
     }
 
     public List<WALEntry> readAllEntries() throws Exception {
@@ -115,26 +102,19 @@ public class WriteAheadLog {
         return entries;
     }
 
-    public void truncateWAL() throws IOException {
-        // Clear the WAL file after successful recovery
-        Files.write(Paths.get(filePath), new byte[0], StandardOpenOption.TRUNCATE_EXISTING);
-        clearBatch();
-    }
-
-    public boolean hasRecoveryData() {
-        try {
-            return Files.exists(Paths.get(filePath)) && Files.size(Paths.get(filePath)) > 0;
-        } catch (IOException e) {
-            return false;
-        }
-    }
-
-    private void clearBatch() {
-        opsBatch.clear();
-        size = 0;
+    public void deleteSegment() throws IOException {
+        close();
+        Files.deleteIfExists(Paths.get(filePath));
     }
 
     public void close() throws IOException {
-        flushToDisk();
+        if (fileStream != null) {
+            fileStream.close();
+        }
     }
+
+    public String getFilePath() {
+        return filePath;
+    }
+
 }

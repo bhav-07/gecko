@@ -30,18 +30,21 @@ public class SSTable {
     private Integer sizeInBytes = 0;
     private List<SparseIndex> sparseKeys = new ArrayList<>();
 
-    @Value("${sst.directory}")
-    private static final String SST_DIR = "./sst";
 
     public SSTable(int sstCounter) {
         this.sstCounter = sstCounter;
     }
 
-    public static void initSSTableOnDisk(List<MemTableRecord> entries) throws IOException {
+    public static SSTable initSSTableOnDisk(List<MemTableRecord> entries, String SST_DIR) throws IOException {
         int counter = sstTableCounter.incrementAndGet();
         SSTable table = new SSTable(counter);
         table.initTableFiles(SST_DIR);
         writeEntriesToSST(entries, table);
+        return table;
+    }
+
+    public static SSTable loadFromDisk(String sstDir, long sstId) {
+        return null;
     }
 
     public void initTableFiles(String directory) throws IOException {
