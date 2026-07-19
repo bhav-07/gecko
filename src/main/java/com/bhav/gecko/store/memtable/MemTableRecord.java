@@ -99,7 +99,7 @@ public class MemTableRecord {
 
     public int calculateChecksum() throws Exception {
         // Create buffer for checksum calculation (excluding the checksum field itself)
-        ByteBuffer buffer = ByteBuffer.allocate(13 + key.getBytes().length + value.getBytes().length);
+        ByteBuffer buffer = ByteBuffer.allocate(17 + key.getBytes().length + value.getBytes().length);
         buffer.order(ByteOrder.LITTLE_ENDIAN);
 
         buffer.put(header.getTombstone());
