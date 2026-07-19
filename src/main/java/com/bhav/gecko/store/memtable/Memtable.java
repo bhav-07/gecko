@@ -1,26 +1,28 @@
 package com.bhav.gecko.store.memtable;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentSkipListMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import com.bhav.gecko.dto.MemtableStats;
 import com.bhav.gecko.exception.KeyNotFoundException;
 
 public class Memtable {
-    private TreeMap<String, MemTableRecord> data;
-    private int sizeInBytes;
+    private ConcurrentSkipListMap<String, MemTableRecord> data;
+    private AtomicInteger sizeInBytes;
 
     public Memtable() {
-        this.data = new TreeMap<>();
-        this.sizeInBytes = 0;
+        this.data = new ConcurrentSkipListMap<>();
+        this.sizeInBytes = new AtomicInteger(0);
     }
 
     public void put(String key, MemTableRecord value) {
-        MemTableRecord existingRecord = data.get(key);
+        MemTableRecord existingRecord = data.put(key, value);
+        int sizeDiff = value.getRecordSize();
         if (existingRecord != null) {
-            sizeInBytes -= existingRecord.getRecordSize();
+            sizeDiff -= existingRecord.getRecordSize();
         }
-        data.put(key, value);
-        sizeInBytes += value.getRecordSize();
+        sizeInBytes.addAndGet(sizeDiff);
     }
 
     public MemtableStats getStats() {
@@ -46,16 +48,16 @@ public class Memtable {
     }
 
     public Map<String, MemTableRecord> getAllKVPairs() {
-        return new TreeMap<>(data);
+        return data;
     }
 
     public void clear() {
         data.clear();
-        sizeInBytes = 0;
+        sizeInBytes.set(0);
     }
 
     public int getSizeInBytes() {
-        return sizeInBytes;
+        return sizeInBytes.get();
     }
 
     public int size() {
@@ -75,7 +77,7 @@ public class Memtable {
     }
 
     public void setSizeInBytes(int sizeInBytes) {
-        this.sizeInBytes = sizeInBytes;
+        this.sizeInBytes.set(sizeInBytes);
     }
 
     @Override
