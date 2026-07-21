@@ -10,6 +10,8 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import io.micrometer.core.annotation.Timed;
+
 import com.bhav.gecko.dto.BulkInsertRequest;
 import com.bhav.gecko.dto.GetResponse;
 import com.bhav.gecko.dto.MemtableStats;
@@ -32,6 +34,7 @@ public class DiskStoreController {
     }
 
     @PostMapping("/put")
+    @Timed(value = "gecko.write.latency", description = "Time taken to put a key")
     public ResponseEntity<String> put(@RequestBody PutRequest request) {
         try {
             diskStoreService.put(request.getKey(), request.getValue());
@@ -43,6 +46,7 @@ public class DiskStoreController {
     }
 
     @GetMapping("/get/{key}")
+    @Timed(value = "gecko.query.latency", description = "Time taken to get a key")
     public ResponseEntity<?> get(@PathVariable String key) {
         try {
             MemTableRecord record = diskStoreService.get(key);
@@ -55,6 +59,7 @@ public class DiskStoreController {
     }
 
     @DeleteMapping("/delete/{key}")
+    @Timed(value = "gecko.write.latency", description = "Time taken to delete a key")
     public ResponseEntity<String> delete(@PathVariable String key) {
         try {
             diskStoreService.delete(key);

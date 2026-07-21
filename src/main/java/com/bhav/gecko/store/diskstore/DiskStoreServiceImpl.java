@@ -27,6 +27,9 @@ import com.bhav.gecko.store.wal.WriteAheadLog;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
+
 // TODO: Implement the flush method
 @Service
 public class DiskStoreServiceImpl implements DiskStoreService {
@@ -48,6 +51,14 @@ public class DiskStoreServiceImpl implements DiskStoreService {
 
     @Value("${memtable.flsuh.threshold}")
     private int MEMTABLE_FLUSH_THRESHOLD;
+
+    private final MeterRegistry meterRegistry;
+
+    public DiskStoreServiceImpl(MeterRegistry meterRegistry) {
+        this.meterRegistry = meterRegistry;
+        // Gauge for memtable size
+        meterRegistry.gauge("gecko.memtable.size.bytes", this, svc -> svc.memtable.getSizeInBytes());
+    }
 
     @PostConstruct
     public void initialize() {
@@ -113,7 +124,12 @@ public class DiskStoreServiceImpl implements DiskStoreService {
 
         MemTableRecord record = new MemTableRecord(key, value);
 
-        activeWal.appendWALOperation(Operation.PUT, record);
+        Timer.Sample sample = Timer.start(meterRegistry);
+        try {
+            activeWal.appendWALOperation(Operation.PUT, record);
+        } finally {
+            sample.stop(meterRegistry.timer("gecko.wal.append.latency"));
+        }
         memtable.put(key, record);
 
         if (memtable.getSizeInBytes() >= MEMTABLE_FLUSH_THRESHOLD) {
@@ -138,6 +154,7 @@ public class DiskStoreServiceImpl implements DiskStoreService {
     }
 
     private void flushImmutable(Memtable toFlush, WriteAheadLog segmentWAL) {
+        Timer.Sample sample = Timer.start(meterRegistry);
         try {
             logger.info("Background flush task started for memtable (" + toFlush.size() + " entries)");
             List<MemTableRecord> entries = new ArrayList<>(toFlush.getAllKVPairs().values());
@@ -161,9 +178,9 @@ public class DiskStoreServiceImpl implements DiskStoreService {
 
             logger.info("Flush complete: sst_" + sst.getSstCounter());
         } catch (Exception e) {
-            logger.error("Flush failed, WAL segment kept: " + e.getMessage());
-            // toFlush stays in immutableMemtables — still readable
             // segmentWAL stays on disk — recoverable after crash
+        } finally {
+            sample.stop(meterRegistry.timer("gecko.flush.duration"));
         }
     }
 
@@ -191,8 +208,14 @@ public class DiskStoreServiceImpl implements DiskStoreService {
         // SSTables
         for (SSTable sst : sstables) {
             try {
-                MemTableRecord record = sst.search(key);
+                if (!sst.getBloomFilter().mightContain(key)) {
+                    continue;
+                }
+                meterRegistry.counter("gecko.bloom.positives").increment();
+                
+                MemTableRecord record = sst.search(key); // The internal search still does a redundant bloom check, but that's fast.
                 if (record != null) {
+                    meterRegistry.counter("gecko.sstable.true_positives").increment();
                     if (record.isDeleted()) {
                         throw new KeyNotFoundException("Key has been deleted: " + key);
                     }
@@ -213,7 +236,12 @@ public class DiskStoreServiceImpl implements DiskStoreService {
         MemTableRecord tombstoneRecord = new MemTableRecord(key, "",
                 System.currentTimeMillis(), true);
 
-        activeWal.appendWALOperation(Operation.DELETE, tombstoneRecord);
+        Timer.Sample sample = Timer.start(meterRegistry);
+        try {
+            activeWal.appendWALOperation(Operation.DELETE, tombstoneRecord);
+        } finally {
+            sample.stop(meterRegistry.timer("gecko.wal.append.latency"));
+        }
         memtable.delete(key, tombstoneRecord);
     }
 
