@@ -20,7 +20,7 @@ import java.util.Map;
  * mode mutates its internal structure on get() (it reorders the linked list),
  * meaning even reads are not thread-safe without explicit synchronization.
  */
-public class LRUCache {
+public class LRUCache implements ReadCache {
 
     private static final Log logger = LogFactory.getLog(LRUCache.class);
 

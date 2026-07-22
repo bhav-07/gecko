@@ -9,6 +9,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import com.bhav.gecko.store.cache.LRUCache;
+import com.bhav.gecko.store.cache.NoOpCache;
+import com.bhav.gecko.store.cache.ReadCache;
 import com.bhav.gecko.store.sstable.SSTable;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -43,7 +45,7 @@ public class DiskStoreServiceImpl implements DiskStoreService {
     private final ExecutorService flushExecutor = Executors.newSingleThreadExecutor();
     private final List<SSTable> sstables = new CopyOnWriteArrayList<>();
     private final Object flushLock = new Object();
-    private LRUCache readCache;
+    private ReadCache readCache;
 
     @Value("${sst.directory}")
     private String SST_DIR;
@@ -71,11 +73,10 @@ public class DiskStoreServiceImpl implements DiskStoreService {
     @PostConstruct
     public void initialize() {
         try {
-            // 1. Initialize the read cache
-            this.readCache = new LRUCache(CACHE_CAPACITY);
-            if (!CACHE_ENABLED) {
-                logger.info("Read cache is DISABLED via config (read.cache.enabled=false)");
-            }
+            // 1. Initialize the read cache (LRUCache if enabled, NoOpCache if disabled)
+            this.readCache = CACHE_ENABLED
+                    ? new LRUCache(CACHE_CAPACITY)
+                    : new NoOpCache();
 
             // 2. Load manifest and recover active SSTables from disk
             this.manifest = new Manifest(SST_DIR);
@@ -145,8 +146,7 @@ public class DiskStoreServiceImpl implements DiskStoreService {
             sample.stop(meterRegistry.timer("gecko.wal.append.latency"));
         }
         memtable.put(key, record);
-        // Any cached version of this key is now stale — invalidate it
-        if (CACHE_ENABLED) readCache.invalidate(key);
+        readCache.invalidate(key);
 
         if (memtable.getSizeInBytes() >= MEMTABLE_FLUSH_THRESHOLD) {
             synchronized (flushLock) {
@@ -222,15 +222,13 @@ public class DiskStoreServiceImpl implements DiskStoreService {
             }
         }
         // 3. LRU cache — avoids hitting the disk for recently read keys
-        if (CACHE_ENABLED) {
-            MemTableRecord cached = readCache.get(key);
-            if (cached != null) {
-                // Tombstones can live in the cache too (from a previous SSTable search)
-                if (cached.isDeleted()) {
-                    throw new KeyNotFoundException("Key has been deleted: " + key);
-                }
-                return cached;
+        MemTableRecord cached = readCache.get(key);
+        if (cached != null) {
+            // Tombstones can live in the cache too (from a previous SSTable search)
+            if (cached.isDeleted()) {
+                throw new KeyNotFoundException("Key has been deleted: " + key);
             }
+            return cached;
         }
         // 4. SSTables (disk I/O — most expensive path)
         for (SSTable sst : sstables) {
@@ -244,7 +242,7 @@ public class DiskStoreServiceImpl implements DiskStoreService {
                 if (record != null) {
                     meterRegistry.counter("gecko.sstable.true_positives").increment();
                     // Cache the result (including tombstones) so repeated lookups skip the disk
-                    if (CACHE_ENABLED) readCache.put(key, record);
+                    readCache.put(key, record);
                     if (record.isDeleted()) {
                         throw new KeyNotFoundException("Key has been deleted: " + key);
                     }
@@ -272,8 +270,7 @@ public class DiskStoreServiceImpl implements DiskStoreService {
             sample.stop(meterRegistry.timer("gecko.wal.append.latency"));
         }
         memtable.delete(key, tombstoneRecord);
-        // Evict from cache so reads don't resurrect the deleted key
-        if (CACHE_ENABLED) readCache.invalidate(key);
+        readCache.invalidate(key);
     }
 
     public void recoverFromWAL() throws Exception {
