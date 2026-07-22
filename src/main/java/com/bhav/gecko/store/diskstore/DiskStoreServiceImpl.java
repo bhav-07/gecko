@@ -8,6 +8,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import com.bhav.gecko.store.cache.LRUCache;
 import com.bhav.gecko.store.sstable.SSTable;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -42,6 +43,7 @@ public class DiskStoreServiceImpl implements DiskStoreService {
     private final ExecutorService flushExecutor = Executors.newSingleThreadExecutor();
     private final List<SSTable> sstables = new CopyOnWriteArrayList<>();
     private final Object flushLock = new Object();
+    private LRUCache readCache;
 
     @Value("${sst.directory}")
     private String SST_DIR;
@@ -51,6 +53,12 @@ public class DiskStoreServiceImpl implements DiskStoreService {
 
     @Value("${memtable.flsuh.threshold}")
     private int MEMTABLE_FLUSH_THRESHOLD;
+
+    @Value("${read.cache.enabled:true}")
+    private boolean CACHE_ENABLED;
+
+    @Value("${read.cache.capacity:1000}")
+    private int CACHE_CAPACITY;
 
     private final MeterRegistry meterRegistry;
 
@@ -63,15 +71,21 @@ public class DiskStoreServiceImpl implements DiskStoreService {
     @PostConstruct
     public void initialize() {
         try {
-            // 1. Load manifest and recover active SSTables from disk
+            // 1. Initialize the read cache
+            this.readCache = new LRUCache(CACHE_CAPACITY);
+            if (!CACHE_ENABLED) {
+                logger.info("Read cache is DISABLED via config (read.cache.enabled=false)");
+            }
+
+            // 2. Load manifest and recover active SSTables from disk
             this.manifest = new Manifest(SST_DIR);
             manifest.load();
             loadSSTTablesFromManifest();
 
-            // 2. Replay WAL to restore any writes that hadn't been flushed yet
+            // 3. Replay WAL to restore any writes that hadn't been flushed yet
             recoverFromWAL();
 
-            // 3. Create a fresh WAL segment for this session
+            // 4. Create a fresh WAL segment for this session
             this.activeWal = WriteAheadLog.createSegment(WAL_DIR);
             logger.info("Initialized: " + sstables.size() + " SSTables loaded");
         } catch (Exception e) {
@@ -131,6 +145,8 @@ public class DiskStoreServiceImpl implements DiskStoreService {
             sample.stop(meterRegistry.timer("gecko.wal.append.latency"));
         }
         memtable.put(key, record);
+        // Any cached version of this key is now stale — invalidate it
+        if (CACHE_ENABLED) readCache.invalidate(key);
 
         if (memtable.getSizeInBytes() >= MEMTABLE_FLUSH_THRESHOLD) {
             synchronized (flushLock) {
@@ -195,34 +211,47 @@ public class DiskStoreServiceImpl implements DiskStoreService {
     }
 
     public MemTableRecord get(String key) throws KeyNotFoundException {
-        // Active memtable
+        // 1. Active memtable
         if (memtable.containsKey(key)) {
             return memtable.get(key);
         }
-        // Immutable memtables
+        // 2. Immutable memtables (data frozen during an in-progress flush)
         for (Memtable imm : immutableMemtables) {
             if (imm.containsKey(key)) {
                 return imm.get(key);
             }
         }
-        // SSTables
+        // 3. LRU cache — avoids hitting the disk for recently read keys
+        if (CACHE_ENABLED) {
+            MemTableRecord cached = readCache.get(key);
+            if (cached != null) {
+                // Tombstones can live in the cache too (from a previous SSTable search)
+                if (cached.isDeleted()) {
+                    throw new KeyNotFoundException("Key has been deleted: " + key);
+                }
+                return cached;
+            }
+        }
+        // 4. SSTables (disk I/O — most expensive path)
         for (SSTable sst : sstables) {
             try {
                 if (!sst.getBloomFilter().mightContain(key)) {
                     continue;
                 }
                 meterRegistry.counter("gecko.bloom.positives").increment();
-                
-                MemTableRecord record = sst.search(key); // The internal search still does a redundant bloom check, but that's fast.
+
+                MemTableRecord record = sst.search(key);
                 if (record != null) {
                     meterRegistry.counter("gecko.sstable.true_positives").increment();
+                    // Cache the result (including tombstones) so repeated lookups skip the disk
+                    if (CACHE_ENABLED) readCache.put(key, record);
                     if (record.isDeleted()) {
                         throw new KeyNotFoundException("Key has been deleted: " + key);
                     }
                     return record;
                 }
             } catch (KeyNotFoundException e) {
-                // If we found a tombstone, stop searching older SSTables and propagate the delete immediately
+                // Tombstone found — stop searching older SSTables and propagate immediately
                 throw e;
             } catch (Exception e) {
                 logger.error("Error searching SSTable sst_" + sst.getSstCounter() + " for key: " + key, e);
@@ -243,6 +272,8 @@ public class DiskStoreServiceImpl implements DiskStoreService {
             sample.stop(meterRegistry.timer("gecko.wal.append.latency"));
         }
         memtable.delete(key, tombstoneRecord);
+        // Evict from cache so reads don't resurrect the deleted key
+        if (CACHE_ENABLED) readCache.invalidate(key);
     }
 
     public void recoverFromWAL() throws Exception {
