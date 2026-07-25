@@ -123,7 +123,12 @@ public class SSTableIterator {
         dataFile.readFully(recordBytes, headerBytes.length, keySize + valueSize);
 
         try {
-            return MemTableRecord.decodeKV(recordBytes);
+            MemTableRecord record = MemTableRecord.decodeKV(recordBytes);
+            if (!record.verifyChecksum()) {
+                System.err.println("Data corruption: Checksum mismatch in sst_" + sst.getSstCounter() + ". Stopping iteration.");
+                return null;
+            }
+            return record;
         } catch (Exception e) {
             // Corrupt record body, stop iteration
             return null;

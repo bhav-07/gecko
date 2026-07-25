@@ -124,6 +124,10 @@ public class SSTable {
 
             int cmp = record.getKey().compareTo(key);
             if (cmp == 0) {
+                if (!record.verifyChecksum()) {
+                    System.err.println("Data corruption: Checksum mismatch for key '" + key + "' in sst_" + sstCounter);
+                    return null; // Treat corrupted record as missing
+                }
                 return record;
             } else if (cmp > 0) {
                 // Since the SSTable is sorted, if we encounter a key greater than our target,
