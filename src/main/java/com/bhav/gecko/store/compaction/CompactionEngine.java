@@ -101,7 +101,7 @@ public class CompactionEngine {
 
             long elapsed = System.currentTimeMillis() - startMs;
             logger.info("Compaction complete: " + candidates.size()
-                    + " SSTables → sst_" + merged.getSstCounter()
+                    + " SSTables - sst_" + merged.getSstCounter()
                     + " in " + elapsed + "ms");
 
         } catch (Exception e) {

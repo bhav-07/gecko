@@ -209,12 +209,14 @@ public class DiskStoreServiceImpl implements DiskStoreService {
 
             logger.info("Flush complete: sst_" + sst.getSstCounter());
 
-            // 6. Check if compaction should run. Pass a snapshot of the current
-            // list so the strategy sees a stable view, and pass the atomic swap
-            // callback so the engine can replace the list when it's done.
-            List<SSTable> snapshot = new ArrayList<>(sstables);
-            compactionExecutor.submit(() ->
-                    compactionEngine.maybeCompact(snapshot, this::swapSSTables));
+            // 6. Check if compaction should run. Submit a task to the compaction executor.
+            // The snapshot is taken INSIDE the task so it reflects the most up-to-date
+            // state of the list when the task actually starts running. If a previous
+            // compaction just finished, this task will see the new merged SSTable.
+            compactionExecutor.submit(() -> {
+                List<SSTable> currentSnapshot = new ArrayList<>(sstables);
+                compactionEngine.maybeCompact(currentSnapshot, this::swapSSTables);
+            });
 
         } catch (Exception e) {
             // segmentWAL stays on disk — recoverable after crash
