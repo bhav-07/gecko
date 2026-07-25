@@ -18,7 +18,7 @@ public class SSTable {
     private static final String DATA_FILE_EXTENSION = ".data";
     private static final String INDEX_FILE_EXTENSION = ".index";
     private static final String BLOOM_FILE_EXTENSION = ".bloom";
-    private static final int SPARSE_INDEX_SAMPLE_SIZE = 1000;
+    private static final int SPARSE_INDEX_SAMPLE_SIZE = 4;
     private static final AtomicInteger sstTableCounter = new AtomicInteger(0);
 
     private RandomAccessFile dataFile;
@@ -42,7 +42,8 @@ public class SSTable {
     public static void syncCounter(int minValue) {
         int current = sstTableCounter.get();
         while (current < minValue) {
-            if (sstTableCounter.compareAndSet(current, minValue)) break;
+            if (sstTableCounter.compareAndSet(current, minValue))
+                break;
             current = sstTableCounter.get();
         }
     }
@@ -314,12 +315,30 @@ public class SSTable {
         this.sizeInBytes = sizeInBytes;
     }
 
-    // public SparseIndex[] getSparseKeys() {
-    // return sparseKeys;
-    // }
+    /**
+     * Closes all open file handles and deletes the three files that make up this
+     * SSTable (.data, .index, .bloom) from disk.
+     *
+     * Must be called only after the SSTable has been removed from the active list
+     * so no reader can attempt to use it while files are being deleted.
+     * On Windows, the close() must happen before any delete attempt because the
+     * OS holds a file lock while a RandomAccessFile is open.
+     */
+    public void deleteFiles(String sstDir) throws IOException {
+        close(); // release OS file locks first
+        String base = sstDir + File.separator + "sst_" + sstCounter;
+        deleteIfExists(base + DATA_FILE_EXTENSION);
+        deleteIfExists(base + INDEX_FILE_EXTENSION);
+        deleteIfExists(base + BLOOM_FILE_EXTENSION);
+    }
 
-    // public void setSparseKeys(SparseIndex[] sparseKeys) {
-    // this.sparseKeys = sparseKeys;
-    // }
+    private void deleteIfExists(String path) {
+        File f = new File(path);
+        if (f.exists() && !f.delete()) {
+            // Log rather than throw — a failed delete is not worth bringing down the server.
+            // The file is simply orphaned on disk and can be cleaned up on the next restart.
+            System.err.println("Warning: could not delete SSTable file: " + path);
+        }
+    }
 
 }
