@@ -34,7 +34,7 @@ public class WriteAheadLog {
         return new WriteAheadLog(filePath);
     }
 
-    public void appendWALOperation(Operation op, MemTableRecord record) throws Exception {
+    public synchronized void appendWALOperation(Operation op, MemTableRecord record) throws Exception {
         byte[] encodedRecord = record.encodeKV();
         byte[] entry = new byte[1 + encodedRecord.length];
         entry[0] = op.getValue();
