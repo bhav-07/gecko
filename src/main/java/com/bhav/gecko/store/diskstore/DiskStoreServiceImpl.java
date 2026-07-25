@@ -11,6 +11,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import com.bhav.gecko.store.cache.LRUCache;
 import com.bhav.gecko.store.cache.NoOpCache;
 import com.bhav.gecko.store.cache.ReadCache;
+import com.bhav.gecko.store.compaction.CompactionEngine;
+import com.bhav.gecko.store.compaction.MergeAllStrategy;
 import com.bhav.gecko.store.sstable.SSTable;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -45,7 +47,10 @@ public class DiskStoreServiceImpl implements DiskStoreService {
     private final ExecutorService flushExecutor = Executors.newSingleThreadExecutor();
     private final List<SSTable> sstables = new CopyOnWriteArrayList<>();
     private final Object flushLock = new Object();
+    private final Object compactionLock = new Object();
+    private final ExecutorService compactionExecutor = Executors.newSingleThreadExecutor();
     private ReadCache readCache;
+    private CompactionEngine compactionEngine;
 
     @Value("${sst.directory}")
     private String SST_DIR;
@@ -61,6 +66,9 @@ public class DiskStoreServiceImpl implements DiskStoreService {
 
     @Value("${read.cache.capacity:1000}")
     private int CACHE_CAPACITY;
+
+    @Value("${compaction.threshold:4}")
+    private int COMPACTION_THRESHOLD;
 
     private final MeterRegistry meterRegistry;
 
@@ -83,10 +91,17 @@ public class DiskStoreServiceImpl implements DiskStoreService {
             manifest.load();
             loadSSTTablesFromManifest();
 
-            // 3. Replay WAL to restore any writes that hadn't been flushed yet
+            // 3. Initialize the compaction engine with the configured strategy.
+            // Must come after manifest is loaded so the engine has a valid manifest reference.
+            this.compactionEngine = new CompactionEngine(
+                    SST_DIR,
+                    manifest,
+                    new MergeAllStrategy(COMPACTION_THRESHOLD));
+
+            // 4. Replay WAL to restore any writes that hadn't been flushed yet
             recoverFromWAL();
 
-            // 4. Create a fresh WAL segment for this session
+            // 5. Create a fresh WAL segment for this session
             this.activeWal = WriteAheadLog.createSegment(WAL_DIR);
             logger.info("Initialized: " + sstables.size() + " SSTables loaded");
         } catch (Exception e) {
@@ -193,10 +208,37 @@ public class DiskStoreServiceImpl implements DiskStoreService {
             segmentWAL.deleteSegment();
 
             logger.info("Flush complete: sst_" + sst.getSstCounter());
+
+            // 6. Check if compaction should run. Pass a snapshot of the current
+            // list so the strategy sees a stable view, and pass the atomic swap
+            // callback so the engine can replace the list when it's done.
+            List<SSTable> snapshot = new ArrayList<>(sstables);
+            compactionExecutor.submit(() ->
+                    compactionEngine.maybeCompact(snapshot, this::swapSSTables));
+
         } catch (Exception e) {
             // segmentWAL stays on disk — recoverable after crash
+            logger.error("Flush failed: " + e.getMessage(), e);
         } finally {
             sample.stop(meterRegistry.timer("gecko.flush.duration"));
+        }
+    }
+
+    /**
+     * Atomically replaces the old SSTables with the new merged one in the
+     * live sstables list. Called by CompactionEngine after a successful merge.
+     *
+     * Synchronized so no two compactions can race on the list simultaneously.
+     * CopyOnWriteArrayList ensures readers currently iterating a snapshot of
+     * the old list finish safely without seeing a half-swapped state.
+     */
+    private void swapSSTables(List<SSTable> oldSSTables, SSTable newSSTable) {
+        synchronized (compactionLock) {
+            sstables.add(0, newSSTable);
+            sstables.removeAll(oldSSTables);
+            logger.info("SSTable swap complete: " + oldSSTables.size()
+                    + " old SSTables replaced by sst_" + newSSTable.getSstCounter()
+                    + " | active SSTables: " + sstables.size());
         }
     }
 
@@ -334,6 +376,7 @@ public class DiskStoreServiceImpl implements DiskStoreService {
     @PreDestroy
     public void cleanup() {
         flushExecutor.shutdown();
+        compactionExecutor.shutdown();
         try {
             if (activeWal != null)
                 activeWal.close();
