@@ -6,6 +6,8 @@ import java.util.*;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import com.bhav.gecko.store.cache.LRUCache;
@@ -58,6 +60,11 @@ public class DiskStoreServiceImpl implements DiskStoreService {
     @Value("${wal.directory}")
     private String WAL_DIR;
 
+    @Value("${wal.sync.interval.ms:100}")
+    private long walSyncIntervalMs;
+
+    private ScheduledExecutorService walSyncExecutor;
+
     @Value("${memtable.flsuh.threshold}")
     private int MEMTABLE_FLUSH_THRESHOLD;
 
@@ -103,6 +110,26 @@ public class DiskStoreServiceImpl implements DiskStoreService {
 
             // 5. Create a fresh WAL segment for this session
             this.activeWal = WriteAheadLog.createSegment(WAL_DIR);
+
+            // 6. Start the WAL sync background thread
+            this.walSyncExecutor = Executors.newSingleThreadScheduledExecutor();
+            this.walSyncExecutor.scheduleAtFixedRate(() -> {
+                try {
+                    WriteAheadLog currentWal;
+                    rwLock.readLock().lock();
+                    try {
+                        currentWal = this.activeWal;
+                    } finally {
+                        rwLock.readLock().unlock();
+                    }
+                    if (currentWal != null) {
+                        currentWal.sync();
+                    }
+                } catch (Exception e) {
+                    logger.error("Error during background WAL sync", e);
+                }
+            }, walSyncIntervalMs, walSyncIntervalMs, TimeUnit.MILLISECONDS);
+
             logger.info("Initialized: " + sstables.size() + " SSTables loaded");
         } catch (Exception e) {
             logger.error("Initialization failed: " + e.getMessage());
@@ -377,12 +404,17 @@ public class DiskStoreServiceImpl implements DiskStoreService {
 
     @PreDestroy
     public void cleanup() {
+        if (walSyncExecutor != null) {
+            walSyncExecutor.shutdown();
+        }
         flushExecutor.shutdown();
         compactionExecutor.shutdown();
         try {
-            if (activeWal != null)
+            if (activeWal != null) {
+                activeWal.sync();
                 activeWal.close();
-        } catch (IOException e) {
+            }
+        } catch (Exception e) {
             logger.error("Error closing active WAL: " + e.getMessage());
         }
     }
