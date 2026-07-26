@@ -9,6 +9,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.ReadWriteLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import com.bhav.gecko.store.cache.LRUCache;
 import com.bhav.gecko.store.cache.NoOpCache;
@@ -51,6 +53,7 @@ public class DiskStoreServiceImpl implements DiskStoreService {
     private final Object flushLock = new Object();
     private final Object compactionLock = new Object();
     private final ExecutorService compactionExecutor = Executors.newSingleThreadExecutor();
+    private final ReadWriteLock rwLock = new ReentrantReadWriteLock();
     private ReadCache readCache;
     private CompactionEngine compactionEngine;
 
@@ -181,28 +184,46 @@ public class DiskStoreServiceImpl implements DiskStoreService {
 
         MemTableRecord record = new MemTableRecord(key, value);
 
-        Timer.Sample sample = Timer.start(meterRegistry);
+        rwLock.readLock().lock();
         try {
-            activeWal.appendWALOperation(Operation.PUT, record);
+            Timer.Sample sample = Timer.start(meterRegistry);
+            try {
+                activeWal.appendWALOperation(Operation.PUT, record);
+            } finally {
+                sample.stop(meterRegistry.timer("gecko.wal.append.latency"));
+            }
+            memtable.put(key, record);
+            readCache.invalidate(key);
         } finally {
-            sample.stop(meterRegistry.timer("gecko.wal.append.latency"));
+            rwLock.readLock().unlock();
         }
-        memtable.put(key, record);
-        readCache.invalidate(key);
 
+        checkAndInitiateFlush();
+    }
+
+    private void checkAndInitiateFlush() {
         if (memtable.getSizeInBytes() >= MEMTABLE_FLUSH_THRESHOLD) {
             synchronized (flushLock) {
                 if (memtable.getSizeInBytes() >= MEMTABLE_FLUSH_THRESHOLD) {
                     logger.warn("Flush threshold exceeded (Size: " + memtable.getSizeInBytes() + " bytes) - initiating flush");
                     logger.info(memtable.toString());
-                    WriteAheadLog frozenWAL = this.activeWal;
-                    Memtable frozenMemtable = this.memtable;
+                    
+                    rwLock.writeLock().lock();
+                    WriteAheadLog frozenWAL;
+                    Memtable frozenMemtable;
+                    try {
+                        frozenWAL = this.activeWal;
+                        frozenMemtable = this.memtable;
+                        this.activeWal = WriteAheadLog.createSegment(WAL_DIR);
+                        this.memtable = new Memtable();
+                    } catch (IOException e) {
+                        logger.error("Failed to create new WAL segment during flush", e);
+                        return; // Abort flush if we can't create a new WAL
+                    } finally {
+                        rwLock.writeLock().unlock();
+                    }
 
-                    this.activeWal = WriteAheadLog.createSegment(WAL_DIR);
-                    this.memtable = new Memtable();
-
-                    // Track the frozen memtable so reads during the flush window still find its
-                    // keys.
+                    // Track the frozen memtable so reads during the flush window still find its keys.
                     // flushImmutable() will remove it from this list once it's safely on disk.
                     immutableMemtables.add(frozenMemtable);
                     flushExecutor.submit(() -> flushImmutable(frozenMemtable, frozenWAL));
@@ -334,14 +355,21 @@ public class DiskStoreServiceImpl implements DiskStoreService {
         MemTableRecord tombstoneRecord = new MemTableRecord(key, "",
                 System.currentTimeMillis(), true);
 
-        Timer.Sample sample = Timer.start(meterRegistry);
+        rwLock.readLock().lock();
         try {
-            activeWal.appendWALOperation(Operation.DELETE, tombstoneRecord);
+            Timer.Sample sample = Timer.start(meterRegistry);
+            try {
+                activeWal.appendWALOperation(Operation.DELETE, tombstoneRecord);
+            } finally {
+                sample.stop(meterRegistry.timer("gecko.wal.append.latency"));
+            }
+            memtable.delete(key, tombstoneRecord);
+            readCache.invalidate(key);
         } finally {
-            sample.stop(meterRegistry.timer("gecko.wal.append.latency"));
+            rwLock.readLock().unlock();
         }
-        memtable.delete(key, tombstoneRecord);
-        readCache.invalidate(key);
+        
+        checkAndInitiateFlush();
     }
 
     public void recoverFromWAL() throws Exception {
