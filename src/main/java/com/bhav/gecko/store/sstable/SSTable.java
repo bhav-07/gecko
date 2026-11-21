@@ -6,10 +6,12 @@ import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import com.bhav.gecko.store.FileSync;
 import com.bhav.gecko.store.memtable.Header;
 import com.bhav.gecko.store.memtable.MemTableRecord;
 
@@ -52,11 +54,35 @@ public class SSTable {
         int counter = sstTableCounter.incrementAndGet();
         SSTable table = new SSTable(counter);
         table.initTableFiles(SST_DIR);
+
+        // An earlier run may have crashed after creating files with this id but
+        // before recording them in the manifest. "rw" mode overwrites from offset 0
+        // without truncating, so clear any leftover bytes from that orphan first.
+        table.dataFile.setLength(0);
+        table.indexFile.setLength(0);
+
         writeEntriesToSST(entries, table);
+
+        // Force every file and the directory entry to disk. The caller records this
+        // SSTable in the manifest and then deletes the WAL (or, for compaction, the
+        // input SSTables), so after this returns these files are the only copy.
+        table.dataFile.getFD().sync();
+        table.indexFile.getFD().sync();
+        FileSync.syncDirectory(Paths.get(SST_DIR));
         return table;
     }
 
     public static SSTable loadFromDisk(String sstDir, int sstCounter) throws IOException {
+        // initTableFiles opens in "rw" mode, which would silently create empty files
+        // for a missing SSTable. A table listed in the manifest must already exist.
+        String base = sstDir + File.separator + "sst_" + sstCounter;
+        for (String ext : new String[] { DATA_FILE_EXTENSION, INDEX_FILE_EXTENSION, BLOOM_FILE_EXTENSION }) {
+            File f = new File(base + ext);
+            if (!f.isFile() || f.length() == 0) {
+                throw new IOException("SSTable file missing or empty: " + f.getPath());
+            }
+        }
+
         SSTable table = new SSTable(sstCounter);
         table.initTableFiles(sstDir);
         table.sparseKeys = loadSparseIndexFile(table.indexFile);
@@ -94,49 +120,57 @@ public class SSTable {
             }
         }
 
-        long startOffset = sparseKeys.get(bestIdx).getOffsetInbytes();
-        long endOffset = (bestIdx + 1 < sparseKeys.size())
-                ? sparseKeys.get(bestIdx + 1).getOffsetInbytes()
-                : dataFile.length();
+        // One RandomAccessFile is shared by every reader of this table and by the
+        // compaction iterator, and seek()+read() moves a shared file pointer. Without
+        // this lock, concurrent lookups read from each other's offsets and can report
+        // a key as missing, falling through to an older SSTable.
+        synchronized (dataFile) {
+            long startOffset = sparseKeys.get(bestIdx).getOffsetInbytes();
+            long endOffset = (bestIdx + 1 < sparseKeys.size())
+                    ? sparseKeys.get(bestIdx + 1).getOffsetInbytes()
+                    : dataFile.length();
 
-        // 3. Sequential Disk Scan
-        dataFile.seek(startOffset);
+            // 3. Sequential Disk Scan
+            dataFile.seek(startOffset);
 
-        while (dataFile.getFilePointer() < endOffset) {
-            byte[] headerBytes = new byte[Header.HEADER_SIZE];
-            if (dataFile.read(headerBytes) < headerBytes.length) {
-                break;
-            }
-
-            Header header = new Header();
-            header.decodeHeader(headerBytes);
-
-            int keySize = header.getKeySize();
-            int valueSize = header.getValueSize();
-
-            int totalSize = Header.HEADER_SIZE + keySize + valueSize;
-            byte[] recordBytes = new byte[totalSize];
-            System.arraycopy(headerBytes, 0, recordBytes, 0, headerBytes.length);
-
-            dataFile.readFully(recordBytes, headerBytes.length, keySize + valueSize);
-
-            MemTableRecord record = MemTableRecord.decodeKV(recordBytes);
-
-            int cmp = record.getKey().compareTo(key);
-            if (cmp == 0) {
-                if (!record.verifyChecksum()) {
-                    System.err.println("Data corruption: Checksum mismatch for key '" + key + "' in sst_" + sstCounter);
-                    return null; // Treat corrupted record as missing
+            while (dataFile.getFilePointer() < endOffset) {
+                byte[] headerBytes = new byte[Header.HEADER_SIZE];
+                if (dataFile.read(headerBytes) < headerBytes.length) {
+                    break;
                 }
-                return record;
-            } else if (cmp > 0) {
-                // Since the SSTable is sorted, if we encounter a key greater than our target,
-                // it's not here.
-                return null;
-            }
-        }
 
-        return null;
+                Header header = new Header();
+                header.decodeHeader(headerBytes);
+
+                int keySize = header.getKeySize();
+                int valueSize = header.getValueSize();
+
+                int totalSize = Header.HEADER_SIZE + keySize + valueSize;
+                byte[] recordBytes = new byte[totalSize];
+                System.arraycopy(headerBytes, 0, recordBytes, 0, headerBytes.length);
+
+                dataFile.readFully(recordBytes, headerBytes.length, keySize + valueSize);
+
+                MemTableRecord record = MemTableRecord.decodeKV(recordBytes);
+
+                int cmp = record.getKey().compareTo(key);
+                if (cmp == 0) {
+                    if (!record.verifyChecksum()) {
+                        // Don't report this as a miss: the caller would fall through to an
+                        // older SSTable and return a stale value (or resurrect a deleted key).
+                        throw new IOException("Data corruption: checksum mismatch for key '" + key
+                                + "' in sst_" + sstCounter);
+                    }
+                    return record;
+                } else if (cmp > 0) {
+                    // Since the SSTable is sorted, if we encounter a key greater than our target,
+                    // it's not here.
+                    return null;
+                }
+            }
+
+            return null;
+        }
     }
 
     public void close() throws IOException {

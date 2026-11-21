@@ -64,6 +64,8 @@ public class BloomFilterStore {
 
         try (FileOutputStream fos = new FileOutputStream(bloomFile)) {
             bloomFilter.writeTo(fos);
+            fos.flush();
+            fos.getFD().sync();
             logger.info("Bloom filter saved to file: {}", bloomFile.getAbsolutePath());
         }
     }

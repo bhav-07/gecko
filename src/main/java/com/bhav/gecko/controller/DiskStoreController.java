@@ -17,6 +17,7 @@ import com.bhav.gecko.dto.GetResponse;
 import com.bhav.gecko.dto.MemtableStats;
 import com.bhav.gecko.dto.PutRequest;
 import com.bhav.gecko.exception.KeyNotFoundException;
+import com.bhav.gecko.exception.StorageException;
 import com.bhav.gecko.store.diskstore.DiskStoreServiceImpl;
 import com.bhav.gecko.store.memtable.MemTableRecord;
 
@@ -55,6 +56,9 @@ public class DiskStoreController {
         } catch (KeyNotFoundException e) {
             return ResponseEntity.status(HttpStatus.NOT_FOUND)
                     .body("Key not found: " + key);
+        } catch (StorageException e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Error reading key: " + e.getMessage());
         }
     }
 

@@ -1,5 +1,6 @@
 package com.bhav.gecko.store.manifest;
 
+import com.bhav.gecko.store.FileSync;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 
@@ -45,7 +46,7 @@ public class Manifest {
      * If the file doesn't exist, this is treated as a fresh database with no SSTables.
      * Malformed lines are logged and skipped rather than crashing the server.
      */
-    public void load() throws IOException {
+    public synchronized void load() throws IOException {
         Path path = Paths.get(manifestPath);
         if (!Files.exists(path)) {
             logger.info("No manifest file found — starting fresh database");
@@ -73,7 +74,7 @@ public class Manifest {
      * This is the crash-safe commit point — we fsync the manifest before the caller
      * deletes the WAL segment.
      */
-    public void addEntry(int sstCounter) throws IOException {
+    public synchronized void addEntry(int sstCounter) throws IOException {
         ManifestEntry entry = new ManifestEntry(ACTION_ADD, sstCounter, System.currentTimeMillis());
         appendToDisk(entry);
         entries.add(entry);
@@ -84,7 +85,7 @@ public class Manifest {
      * Appends a REMOVE entry for an SSTable that has been merged away during compaction.
      * Reserved for future use — not called yet.
      */
-    public void removeEntry(int sstCounter) throws IOException {
+    public synchronized void removeEntry(int sstCounter) throws IOException {
         ManifestEntry entry = new ManifestEntry(ACTION_REMOVE, sstCounter, System.currentTimeMillis());
         appendToDisk(entry);
         entries.add(entry);
@@ -98,7 +99,7 @@ public class Manifest {
      * correct order to add them to DiskStoreServiceImpl.sstables so that
      * sstables.add(0, sst) during future flushes always puts the newest first.
      */
-    public List<Integer> getActiveSSTIds() {
+    public synchronized List<Integer> getActiveSSTIds() {
         List<Integer> active = new ArrayList<>();
         for (ManifestEntry entry : entries) {
             if (ACTION_ADD.equals(entry.getAction())) {
@@ -116,7 +117,7 @@ public class Manifest {
      * don't collide with existing filenames.
      * Returns 0 if no SSTables have been recorded yet.
      */
-    public int getMaxSSTId() {
+    public synchronized int getMaxSSTId() {
         return entries.stream()
                 .filter(e -> ACTION_ADD.equals(e.getAction()))
                 .mapToInt(ManifestEntry::getSstId)
@@ -140,6 +141,7 @@ public class Manifest {
         String line = entry.toLine() + System.lineSeparator();
         byte[] bytes = line.getBytes(StandardCharsets.UTF_8);
 
+        boolean isNewFile = !Files.exists(path);
         try (FileOutputStream fos = new FileOutputStream(manifestPath, /* append= */ true)) {
             fos.write(bytes);
             fos.flush();
@@ -147,13 +149,17 @@ public class Manifest {
             // return to the caller, who will then delete the WAL segment.
             fos.getFD().sync();
         }
+        if (isNewFile) {
+            // The first write creates the manifest file; persist its directory entry too.
+            FileSync.syncDirectory(path.getParent());
+        }
     }
 
     public String getManifestPath() {
         return manifestPath;
     }
 
-    public List<ManifestEntry> getEntries() {
+    public synchronized List<ManifestEntry> getEntries() {
         return new ArrayList<>(entries);
     }
 }

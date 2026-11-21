@@ -26,6 +26,7 @@ import org.springframework.stereotype.Service;
 
 import com.bhav.gecko.dto.MemtableStats;
 import com.bhav.gecko.exception.KeyNotFoundException;
+import com.bhav.gecko.exception.StorageException;
 import com.bhav.gecko.service.DiskStoreService;
 import com.bhav.gecko.store.memtable.Memtable;
 import com.bhav.gecko.store.memtable.MemTableRecord;
@@ -159,9 +160,11 @@ public class DiskStoreServiceImpl implements DiskStoreService {
                 sstables.add(0, sst);
                 logger.info("Loaded SSTable from disk: sst_" + sstId);
             } catch (IOException e) {
-                // Log but don't crash - a corrupted SSTable shouldn't bring down the server.
-                // The data is still in the WAL if it hadn't been flushed cleanly.
-                logger.error("Failed to load sst_" + sstId + " — skipping: " + e.getMessage());
+                // Refuse to start. The manifest says this table holds committed data, and
+                // its WAL segment was deleted when it was flushed, so there is no other
+                // copy. Skipping it would silently serve older values or lose keys.
+                throw new IOException("Manifest lists sst_" + sstId
+                        + " but it could not be loaded: " + e.getMessage(), e);
             }
         }
 
@@ -212,9 +215,19 @@ public class DiskStoreServiceImpl implements DiskStoreService {
                     WriteAheadLog frozenWAL;
                     Memtable frozenMemtable;
                     try {
+                        // Create the new segment first so a failure leaves everything unchanged.
+                        WriteAheadLog newWal = WriteAheadLog.createSegment(WAL_DIR);
                         frozenWAL = this.activeWal;
                         frozenMemtable = this.memtable;
-                        this.activeWal = WriteAheadLog.createSegment(WAL_DIR);
+
+                        // Publish the frozen memtable BEFORE swapping in the empty one.
+                        // get() doesn't take the lock: it reads the active memtable, then the
+                        // immutable list. With this order a reader always finds the key in one
+                        // of the two. Index 0 keeps the list newest-first, so a key written in
+                        // two pending memtables resolves to the newer value.
+                        immutableMemtables.add(0, frozenMemtable);
+
+                        this.activeWal = newWal;
                         this.memtable = new Memtable();
                     } catch (IOException e) {
                         logger.error("Failed to create new WAL segment during flush", e);
@@ -223,9 +236,7 @@ public class DiskStoreServiceImpl implements DiskStoreService {
                         rwLock.writeLock().unlock();
                     }
 
-                    // Track the frozen memtable so reads during the flush window still find its keys.
-                    // flushImmutable() will remove it from this list once it's safely on disk.
-                    immutableMemtables.add(frozenMemtable);
+                    // flushImmutable() removes the frozen memtable from the list once it's safely on disk.
                     flushExecutor.submit(() -> flushImmutable(frozenMemtable, frozenWAL));
                 }
             }
@@ -248,6 +259,16 @@ public class DiskStoreServiceImpl implements DiskStoreService {
 
             // 3. Add to in-memory SSTable list for reads (at front = newest)
             sstables.add(0, sst);
+
+            // 3b. Drop cached entries for every flushed key. A reader racing an earlier
+            // put() can cache the value it found in an older SSTable after put() already
+            // invalidated the key. That entry is harmless while the key is in a memtable
+            // (checked before the cache) but would be served once the memtable is gone.
+            // This must run before step 4: while the frozen memtable is still listed,
+            // readers find the key there and never consult the cache.
+            for (String key : toFlush.getKeys()) {
+                readCache.invalidate(key);
+            }
 
             // 4. Remove from immutable list, no longer needed for read path
             immutableMemtables.remove(toFlush);
@@ -292,20 +313,36 @@ public class DiskStoreServiceImpl implements DiskStoreService {
         }
     }
 
+    /**
+     * Writes each pair with its own put(). This is NOT atomic: if some keys fail, the
+     * others stay written. Failures are reported to the caller instead of being hidden.
+     */
     public void bulkInsert(Map<String, String> data) throws Exception {
-        data.forEach((t, u) -> {
+        List<String> failedKeys = new ArrayList<>();
+        Exception firstFailure = null;
+        for (Map.Entry<String, String> entry : data.entrySet()) {
             try {
-                put(t, u);
+                put(entry.getKey(), entry.getValue());
             } catch (Exception e) {
-                logger.error("Failed to insert key: '" + t + "' during bulk insert", e);
+                logger.error("Failed to insert key: '" + entry.getKey() + "' during bulk insert", e);
+                failedKeys.add(entry.getKey());
+                if (firstFailure == null) {
+                    firstFailure = e;
+                }
             }
-        });
+        }
+        if (!failedKeys.isEmpty()) {
+            throw new Exception("Bulk insert partially failed: " + failedKeys.size() + " of "
+                    + data.size() + " keys were not written " + failedKeys, firstFailure);
+        }
     }
 
     public MemTableRecord get(String key) throws KeyNotFoundException {
-        // 1. Active memtable
-        if (memtable.containsKey(key)) {
-            return memtable.get(key);
+        // 1. Active memtable. Read the volatile field once: a flush can swap it at any
+        // moment, and checking one instance but reading another gives a false miss.
+        Memtable active = this.memtable;
+        if (active.containsKey(key)) {
+            return active.get(key);
         }
         // 2. Immutable memtables (data frozen during an in-progress flush)
         for (Memtable imm : immutableMemtables) {
@@ -344,7 +381,11 @@ public class DiskStoreServiceImpl implements DiskStoreService {
                 // Tombstone found — stop searching older SSTables and propagate immediately
                 throw e;
             } catch (Exception e) {
+                // Don't fall through to older SSTables: they may hold an outdated value or
+                // a value this table deleted. An error is better than a wrong answer.
                 logger.error("Error searching SSTable sst_" + sst.getSstCounter() + " for key: " + key, e);
+                throw new StorageException("Failed to read key '" + key + "' from sst_"
+                        + sst.getSstCounter(), e);
             }
         }
 

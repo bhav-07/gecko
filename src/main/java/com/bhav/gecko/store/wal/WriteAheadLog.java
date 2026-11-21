@@ -1,5 +1,6 @@
 package com.bhav.gecko.store.wal;
 
+import com.bhav.gecko.store.FileSync;
 import com.bhav.gecko.store.memtable.Header;
 import com.bhav.gecko.store.memtable.MemTableRecord;
 
@@ -31,7 +32,11 @@ public class WriteAheadLog {
     public static WriteAheadLog createSegment(String walDirectory) throws IOException {
         long timestamp = System.currentTimeMillis();
         String filePath = walDirectory + "/wal_" + timestamp + ".log";
-        return new WriteAheadLog(filePath);
+        WriteAheadLog wal = new WriteAheadLog(filePath);
+        // Persist the new directory entry. Without this, the segment file itself can
+        // vanish after a power loss even though its contents were fsynced.
+        FileSync.syncDirectory(Paths.get(walDirectory));
+        return wal;
     }
 
     public synchronized void appendWALOperation(Operation op, MemTableRecord record) throws Exception {

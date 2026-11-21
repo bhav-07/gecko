@@ -26,11 +26,12 @@ public class SSTableIterator {
     private final SSTable sst;
     private MemTableRecord peeked; // one-record lookahead buffer for peek()
     private boolean exhausted = false; // true once we've read past the last record
+    // This iterator's own read position. The SSTable's file handle is shared with
+    // concurrent lookups, which move the file pointer, so it can't hold our place.
+    private long position = 0;
 
     public SSTableIterator(SSTable sst) throws IOException {
         this.sst = sst;
-        // Seek to the beginning of the data file so we always start from record 0
-        sst.getDataFile().seek(0);
     }
 
     /**
@@ -93,46 +94,54 @@ public class SSTableIterator {
      */
     private MemTableRecord readNextRecord() throws IOException {
         var dataFile = sst.getDataFile();
+        byte[] recordBytes;
 
-        // Check if we've reached end of file
-        if (dataFile.getFilePointer() >= dataFile.length()) {
-            return null;
-        }
-
-        byte[] headerBytes = new byte[Header.HEADER_SIZE];
-        int bytesRead = dataFile.read(headerBytes);
-        if (bytesRead < Header.HEADER_SIZE) {
-            // Partial header - file is truncated or corrupt. Treat as end of file.
-            return null;
-        }
-
-        Header header = new Header();
-        try {
-            header.decodeHeader(headerBytes);
-        } catch (Exception e) {
-            // Corrupt header,stop iteration
-            return null;
-        }
-
-        int keySize = header.getKeySize();
-        int valueSize = header.getValueSize();
-        int totalSize = Header.HEADER_SIZE + keySize + valueSize;
-
-        byte[] recordBytes = new byte[totalSize];
-        System.arraycopy(headerBytes, 0, recordBytes, 0, headerBytes.length);
-        dataFile.readFully(recordBytes, headerBytes.length, keySize + valueSize);
-
-        try {
-            MemTableRecord record = MemTableRecord.decodeKV(recordBytes);
-            if (!record.verifyChecksum()) {
-                System.err.println("Data corruption: Checksum mismatch in sst_" + sst.getSstCounter() + ". Stopping iteration.");
+        // Same lock SSTable.search() takes: seek to our own position, read one record,
+        // and remember where it ended, without a lookup moving the pointer in between.
+        synchronized (dataFile) {
+            if (position >= dataFile.length()) {
                 return null;
             }
-            return record;
-        } catch (Exception e) {
-            // Corrupt record body, stop iteration
-            return null;
+            dataFile.seek(position);
+
+            // Every failure below throws instead of returning null. Returning null would end
+            // the iteration early, and compaction would then commit a merged SSTable that is
+            // missing the rest of this file and delete the original.
+            byte[] headerBytes = new byte[Header.HEADER_SIZE];
+            int bytesRead = dataFile.read(headerBytes);
+            if (bytesRead < Header.HEADER_SIZE) {
+                throw new IOException("Truncated record header in sst_" + sst.getSstCounter());
+            }
+
+            Header header = new Header();
+            try {
+                header.decodeHeader(headerBytes);
+            } catch (Exception e) {
+                throw new IOException("Corrupt record header in sst_" + sst.getSstCounter(), e);
+            }
+
+            int keySize = header.getKeySize();
+            int valueSize = header.getValueSize();
+            int totalSize = Header.HEADER_SIZE + keySize + valueSize;
+
+            recordBytes = new byte[totalSize];
+            System.arraycopy(headerBytes, 0, recordBytes, 0, headerBytes.length);
+            dataFile.readFully(recordBytes, headerBytes.length, keySize + valueSize);
+            position = dataFile.getFilePointer();
         }
+
+        MemTableRecord record;
+        boolean checksumOk;
+        try {
+            record = MemTableRecord.decodeKV(recordBytes);
+            checksumOk = record.verifyChecksum();
+        } catch (Exception e) {
+            throw new IOException("Corrupt record body in sst_" + sst.getSstCounter(), e);
+        }
+        if (!checksumOk) {
+            throw new IOException("Data corruption: checksum mismatch in sst_" + sst.getSstCounter());
+        }
+        return record;
     }
 
     /**
@@ -140,7 +149,7 @@ public class SSTableIterator {
      * Not needed during normal compaction but useful for testing.
      */
     public void reset() throws IOException {
-        sst.getDataFile().seek(0);
+        position = 0;
         peeked = null;
         exhausted = false;
     }
